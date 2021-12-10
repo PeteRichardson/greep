@@ -8,21 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "utils.h"
 
-#define SEP_CHARS "/\\"
 
-// Returns file leaf name from abs path
-const char *leaf_name(const char *path) {
-    char *token = strtok(path, SEP_CHARS);
-    char *prev_token = "greep";
-    while (token != NULL) {
-        prev_token = token;
-        token = strtok(NULL, SEP_CHARS);  // this will be null after the last '/'
-    }
-    return prev_token;
-}
-
-int main(int argc, const char *argv[]) {
+int main(int argc, char *argv[]) {
     const char *search_word;
     unsigned long search_word_maxindex;
     
