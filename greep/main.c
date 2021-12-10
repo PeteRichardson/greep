@@ -44,7 +44,7 @@ void find(char *search_word, FILE *stream, void (*found_callback)(unsigned long 
         if (c == '\n') {
             lineno++;
         }
-        //printf("%4lu\t%c\n",i, c);
+//        printf("%4lu\t%c\n",i, c);
         if (c == EOF) {
             break;
         }
@@ -71,25 +71,25 @@ void found_callback(unsigned long line_num, char *search_word) {
 
 
 void parse_options(OPTIONS *options, int argc, char *argv[]) {
-    char *stream_name = "/dev/stdin";
+    char *stream_name;
     options->stream = 0;
     switch(argc) {
         case 3 :
             stream_name = argv[2];
-            options->stream = fopen(stream_name, "r");
-            if (options->stream == NULL) {
-                fprintf(stderr, "Unable to open file '%s' for reading.\n", argv[2]);
-                exit(EXIT_FAILURE);
-            }
-            /* intentionally falling through to get search_word */
         case 2 :
-             options->search_word = argv[1];
+            stream_name = "/dev/stdin";
              break;
  
         default :
             printf("usage: %s <string> [file]\n", leaf_name(argv[0]));
             exit(EXIT_FAILURE);
     }
+    options->stream = fopen(stream_name, "r");
+    if (options->stream == NULL) {
+        fprintf(stderr, "Unable to open file '%s' for reading.\n", argv[2]);
+        exit(EXIT_FAILURE);
+    }
+    options->search_word = argv[1];
     
     printf("# Searching for '%s'\n", options->search_word);
     printf("# Searching in '%s'\n", stream_name);
