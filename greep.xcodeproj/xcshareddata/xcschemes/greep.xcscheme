@@ -56,10 +56,6 @@
             isEnabled = "YES">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "&lt;"
-            isEnabled = "YES">
-         </CommandLineArgument>
-         <CommandLineArgument
             argument = "test.txt"
             isEnabled = "YES">
          </CommandLineArgument>

@@ -8,30 +8,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/syslimits.h>
-#include <fcntl.h>
+#include "options.h"
 
-#define SEP_CHARS "//"
+const char *argp_program_version     = "greep 0.2";
+const char *argp_program_bug_address = "<pete@peterichardson.com>";
 
-typedef struct OPTIONS {
-    char *search_word;
-    FILE *stream;       // default to 0 (stdin)
-} OPTIONS;
-
-
-// Returns file leaf name from abs path
-const char *leaf_name(char *path) {
-    char *token = strtok(path, SEP_CHARS);
-    char *prev_token = "greep";
-    while (token != NULL) {
-        prev_token = token;
-        token = strtok(NULL, SEP_CHARS);  // this will be null after the last '/'
-    }
-    return prev_token;
-}
-
-
-void find(char *search_word, FILE *stream, void (*found_callback)(unsigned long line, char *search_word)) {
+void find(char *search_word,
+          FILE *stream,
+          char *filename,
+          void (*found_callback)(char *, unsigned long, char *)) {
     unsigned long search_word_maxindex;
     
     search_word_maxindex = strlen(search_word) - 1;
@@ -50,58 +35,50 @@ void find(char *search_word, FILE *stream, void (*found_callback)(unsigned long 
         }
         if (i != 0 && c != search_word[i]) {
             i = 0;
-            ungetc(c, stdin);
-//            printf("[nope]\n");
-            continue;
+            ungetc(c, stream);
         }
         if (c == search_word[i]) {
             if (i==search_word_maxindex ) {
-                (*found_callback)(lineno, search_word);
                 i = 0;
-                continue;
+                (*found_callback)(filename, lineno, search_word);
             }
             i++;
         }
     }
 }
 
-void found_callback(unsigned long line_num, char *search_word) {
-    printf("%3lu: %s\n", line_num, search_word);
-}
-
-
-void parse_options(OPTIONS *options, int argc, char *argv[]) {
-    char *stream_name;
-    options->stream = 0;
-    switch(argc) {
-        case 3 :
-            stream_name = argv[2];
-        case 2 :
-            stream_name = "/dev/stdin";
-             break;
- 
-        default :
-            printf("usage: %s <string> [file]\n", leaf_name(argv[0]));
-            exit(EXIT_FAILURE);
-    }
-    options->stream = fopen(stream_name, "r");
-    if (options->stream == NULL) {
-        fprintf(stderr, "Unable to open file '%s' for reading.\n", argv[2]);
-        exit(EXIT_FAILURE);
-    }
-    options->search_word = argv[1];
-    
-    printf("# Searching for '%s'\n", options->search_word);
-    printf("# Searching in '%s'\n", stream_name);
-
+void found_callback(char *filename, unsigned long line_num, char *search_word) {
+    printf("%s:%lu %s\n", filename, line_num, search_word);
 }
 
 int main(int argc, char *argv[]) {
-    // usage:  greep <string_to_find> [file_to_search]
-    OPTIONS options;
-    parse_options(&options, argc, argv);
+    struct arguments arguments = {
+        .verbose = 0,
+        .search_word = NULL,
+        .stream = 0
+    };
+    int err = argp_parse (&argp, argc, argv, 0, 0, &arguments);
+    if (err != 0) {
+        fprintf(stderr, "unabled to parse command line options: %d", err);
+        exit(EXIT_FAILURE);
+    }
     
-    find(options.search_word, options.stream, found_callback);
+    if (arguments.verbose) {
+        fprintf(stderr, "# Searching for '%s'\n", arguments.search_word);
+        fprintf(stderr, "# Processing %d files: %s...%s\n", arguments.filecount, arguments.filenames[0], arguments.filenames[arguments.filecount - 1]);
+    }
     
+    FILE *stream;
+    char *filename;
+    for (int i = 0; i < arguments.filecount; i++ ) {
+        filename = arguments.filenames[i];
+        stream = fopen(filename, "r");
+        if (stream == NULL) {
+            fprintf(stderr, "# ERROR: Unable to open file '%s' for reading.\n", filename);
+            continue;
+        }
+        find(arguments.search_word, stream, filename, found_callback);
+    }
+
     exit(EXIT_SUCCESS);
 }
