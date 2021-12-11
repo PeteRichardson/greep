@@ -10,29 +10,28 @@
 #include <string.h>
 #include "options.h"
 
-const char *argp_program_version     = "greep 0.2";
+const char *argp_program_version     = "greep 0.3";
 const char *argp_program_bug_address = "<pete@peterichardson.com>";
 
+/*
+ Find a word in a stream of chars.
+ 
+ TODO: memory map the file.  Maybe faster?
+ TODO: read stream a line at a time, and output the whole line
+ */
 void find(char *search_word,
           FILE *stream,
           char *filename,
           void (*found_callback)(char *, unsigned long, char *)) {
-    unsigned long search_word_maxindex;
     
-    search_word_maxindex = strlen(search_word) - 1;
+    unsigned long search_word_maxindex = strlen(search_word) - 1;
 
     char c = '\0';
     unsigned long i = 0;
     unsigned long lineno = 1;
-    while (1) {
-        c = fgetc(stream);
-        if (c == '\n') {
-            lineno++;
-        }
-//        printf("%4lu\t%c\n",i, c);
-        if (c == EOF) {
-            break;
-        }
+    while ((c = fgetc(stream)) != EOF) {
+        if (c == '\n') lineno++;
+        
         if (i != 0 && c != search_word[i]) {
             i = 0;
             ungetc(c, stream);
@@ -47,37 +46,36 @@ void find(char *search_word,
     }
 }
 
-void found_callback(char *filename, unsigned long line_num, char *search_word) {
-    printf("%s:%lu %s\n", filename, line_num, search_word);
+// Run this code whenever a match is found
+void found_callback(char *filename, unsigned long line_num, char *line) {
+    printf("%s:%lu %s\n", filename, line_num, line);
 }
 
 int main(int argc, char *argv[]) {
-    struct arguments arguments = {
-        .verbose = 0,
-        .search_word = NULL,
-        .stream = 0
-    };
-    int err = argp_parse (&argp, argc, argv, 0, 0, &arguments);
+    arguments_t args = ARGUMENT_DEFAULT_VALUES;
+    int err = argp_parse (&argp, argc, argv, 0, 0, &args);
     if (err != 0) {
         fprintf(stderr, "unabled to parse command line options: %d", err);
         exit(EXIT_FAILURE);
     }
     
-    if (arguments.verbose) {
-        fprintf(stderr, "# Searching for '%s'\n", arguments.search_word);
-        fprintf(stderr, "# Processing %d files: %s...%s\n", arguments.filecount, arguments.filenames[0], arguments.filenames[arguments.filecount - 1]);
+    if (args.verbose) {
+        fprintf(stderr, "# Searching for '%s'\n", args.search_word);
+        fprintf(stderr, "# Processing %d files: %s...%s\n", args.filecount, args.filenames[0], args.filenames[args.filecount - 1]);
     }
     
     FILE *stream;
     char *filename;
-    for (int i = 0; i < arguments.filecount; i++ ) {
-        filename = arguments.filenames[i];
+    for (int i = 0; i < args.filecount; i++ ) {
+        filename = args.filenames[i];
+        // TODO: Move fopen into the find() function.  Easier to move to a pthread
+        // TODO: Close the stream
         stream = fopen(filename, "r");
         if (stream == NULL) {
             fprintf(stderr, "# ERROR: Unable to open file '%s' for reading.\n", filename);
             continue;
         }
-        find(arguments.search_word, stream, filename, found_callback);
+        find(args.search_word, stream, filename, found_callback);
     }
 
     exit(EXIT_SUCCESS);

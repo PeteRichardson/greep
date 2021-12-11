@@ -11,13 +11,18 @@
 #include <argp.h>
 
 
-struct arguments {
-//    char *args[2];                /* arg1 & arg2 */
+typedef struct arguments_t {
     int  verbose;
     char *search_word;
     char **filenames;
     int  filecount;
-    FILE *stream;
+} arguments_t;
+
+static arguments_t ARGUMENT_DEFAULT_VALUES = {
+    .verbose = 0,
+    .search_word = NULL,
+    .filenames = NULL,
+    .filecount = 0
 };
 
 static char doc[] = "greep -- a homegrown (and less functional) grep";
