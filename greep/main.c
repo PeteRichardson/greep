@@ -9,7 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <unistd.h>
 
 #include "search_algorithms/search_algorithms.h"
 #include "options.h"
