@@ -9,6 +9,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "search_algorithms/search_algorithms.h"
 #include "options.h"
@@ -27,9 +31,29 @@ void *threaded_find(void *arg) {
     threadargs_t thread_args = *(threadargs_t *) arg;
     
     // mmap file
-    (thread_args.search_alg)(thread_args.search_word, thread_args.filename, 0, 0, &thread_args.found_callback);
-    // munmap file
+    int fdin;
+    struct stat sbuf;
+    void *src;
+    off_t fsz = 0;
+    if ((fdin = open(thread_args.filename, O_RDONLY)) < 0) {
+        fprintf(stderr, "# ERROR: Unable to open file '%s' for reading\n", thread_args.filename);
+        return (void*) 0;
+    }
+    if (fstat(fdin, &sbuf) < 0) {
+        fprintf(stderr, "# ERROR: fstat error reading '%s'\n", thread_args.filename);
+        return (void*) 0;
+    }
+    if ((src = mmap(0, sbuf.st_size, PROT_READ, MAP_SHARED, fdin, fsz)) == MAP_FAILED) {
+        fprintf(stderr, "# ERROR: mmap error for '%s'\n", thread_args.filename);
+        return (void*) 0;
+    }
 
+    // ACTUALLY DO THE WORK.   Call the specified search algorithm.
+    (thread_args.search_alg)(thread_args.search_word, thread_args.filename, src, sbuf.st_size, &thread_args.found_callback);
+    
+    // munmap file
+    munmap(src, sbuf.st_size);
+    close(fdin);
     return 0;
 }
 
