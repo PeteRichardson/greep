@@ -26,7 +26,8 @@ typedef struct threadargs_t {
  Find a word in a stream of chars.
  
  TODO: memory map the file.  Maybe faster?
- TODO: read stream a line at a time, and output the whole line
+ TODO: use better string search algorithm.
+        see http://www-igm.univ-mlv.fr/~lecroq/string/index.html
  */
 void find(const char *search_word,
           const char *filename,
@@ -53,7 +54,8 @@ void find(const char *search_word,
         } else if (c == search_word[i]) {
             if (i==search_word_maxindex ) {
                 i = 0;
-                (*found_callback)(filename, lineno, search_word);  // for now, log word. Switch to whole line later.
+                (*found_callback)(filename, lineno, search_word);
+                // TODO: print the whole line.  for now print search_word.
             }
             i++;
         }
@@ -85,7 +87,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "# Searching for '%s'\n", args.search_word);
     }
     
-    pthread_t threads[args.filecount+5];
+    pthread_t threads[args.filecount];
     threadargs_t payloads[args.filecount];
     for (int i = 0; i < args.filecount; i++ ) {
         threadargs_t thread_args = {
@@ -96,12 +98,11 @@ int main(int argc, char *argv[]) {
         payloads[i] = thread_args;
     }
         
-    err = 0;
     for (int i = 0; i < args.filecount; i++ ) {
         if (args.verbose) {
             fprintf(stderr, "# Processing file %d: %s\n", i, args.filenames[i]);
         }
-        err = pthread_create(&threads[i], NULL, &threaded_find, &payloads[i]);
+        int err = pthread_create(&threads[i], NULL, &threaded_find, &payloads[i]);
         if (err) {
             printf("%s\n", strerror(err), stderr);
             exit(EXIT_FAILURE);

@@ -18,13 +18,12 @@ error_t parse_opt (int key, char *arg, struct argp_state *state)
         case 'v':
             args->verbose = 1;
             break;
-            
-        case 's':
-            args->search_word = arg;
-            break;
  
         case ARGP_KEY_ARG:
-            return ARGP_ERR_UNKNOWN;
+            if (state->arg_num == 0)
+                args->search_word = arg;
+            else
+              return ARGP_ERR_UNKNOWN;
             break;
 
         case ARGP_KEY_ARGS:

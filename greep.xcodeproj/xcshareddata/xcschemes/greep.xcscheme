@@ -52,7 +52,7 @@
       </BuildableProductRunnable>
       <CommandLineArguments>
          <CommandLineArgument
-            argument = "-sgovernment"
+            argument = "government"
             isEnabled = "YES">
          </CommandLineArgument>
          <CommandLineArgument

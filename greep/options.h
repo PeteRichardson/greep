@@ -18,22 +18,23 @@ typedef struct arguments_t {
     int  filecount;
 } arguments_t;
 
+static char default_input_files[] = { "/dev/stdin" };
+
 static arguments_t ARGUMENT_DEFAULT_VALUES = {
     .verbose = 0,
     .search_word = NULL,
-    .filenames = NULL,
-    .filecount = 0
+    .filecount = 1,
+    .filenames = (char**)&default_input_files
 };
 
 static char doc[] = "greep -- a homegrown (and less functional) grep";
 
 /* A description of the arguments we accept. */
-static char args_doc[] = "FILES...";
+static char args_doc[] = "STRING [FILES...]";
 
 /* The options we understand. */
 static struct argp_option options[] = {
     {"verbose",     'v', "verbose",     OPTION_ARG_OPTIONAL, "Produce verbose output" },
-    {"search_word", 's', "search_word", 0, "String to search for" },
     { 0 }
 };
 
