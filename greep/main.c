@@ -72,7 +72,7 @@ void *threaded_find(void *arg) {
 
 // Run this code whenever a match is found
 void found_callback(const char *filename, unsigned long line_num, const char *line) {
-    fprintf(stderr, "%s:%lu %s\n", filename, line_num, line);
+    printf("%s:%lu %s\n", filename, line_num, line);
 }
 
 int main(int argc, char *argv[]) {
