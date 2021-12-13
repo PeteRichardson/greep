@@ -11,20 +11,11 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include "search_algorithms/search_algorithms.h"
 #include "options.h"
 
 const char *argp_program_version     = "greep 0.6";
 const char *argp_program_bug_address = "<pete@peterichardson.com>";
-
-
-typedef void (*callback_t) (const char *, unsigned long, const char *);
-
-typedef void (*search_alg_t) (const char *,         // search_word
-                              const char *,         // filename
-                              const char *,         // start
-                              const unsigned long,  // length
-                              callback_t *);        // callback
-
 
 typedef struct threadargs_t {
     const char *search_word;
@@ -32,48 +23,6 @@ typedef struct threadargs_t {
     search_alg_t search_alg;
     callback_t found_callback;
 } threadargs_t;
-
-/*
- Find using brute force algorithm
-    assume file is in memory
-*/
-void find_bf(const char *search_word,
-             const char *filename,
-             const char *start,
-             const unsigned long length,
-             callback_t *found_callback) {
-    // mmap file
-    FILE *stream = fopen(filename, "r");
-    if (stream == NULL) {
-        fprintf(stderr, "# ERROR: Unable to open file '%s' for reading.\n", filename);
-        return;
-    }
-
-    unsigned long search_word_maxindex = strlen(search_word) - 1;
-
-    char c = '\0';
-    unsigned long i = 0;
-    unsigned long lineno = 1;
-    while ((c = fgetc(stream)) != EOF) {
-        //  printf("%s: %c, %lu\n", filename, c, i);
-        if (c == '\n') lineno++;
-        
-        if (i != 0 && c != search_word[i]) {
-            i = 0;
-            ungetc(c, stream);
-        } else if (c == search_word[i]) {
-            if (i==search_word_maxindex ) {
-                i = 0;
-                (*found_callback)(filename, lineno, search_word);
-                // TODO: print the whole line.  for now print search_word.
-            }
-            i++;
-        }
-    }
-    
-    fclose(stream);
-
-}
 
 void *threaded_find(void *arg) {
     threadargs_t thread_args = *(threadargs_t *) arg;
@@ -84,7 +33,6 @@ void *threaded_find(void *arg) {
 
     return 0;
 }
-
 
 // Run this code whenever a match is found
 void found_callback(const char *filename, unsigned long line_num, const char *line) {

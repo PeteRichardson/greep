@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		C10C75AF2765344B00A558A5 /* libargp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C10C75AE27652F2A00A558A5 /* libargp.a */; };
 		C10C75B22765375900A558A5 /* options.c in Sources */ = {isa = PBXBuildFile; fileRef = C10C75B12765375900A558A5 /* options.c */; };
+		C10C75CA2767FE3100A558A5 /* search_default.c in Sources */ = {isa = PBXBuildFile; fileRef = C10C75C92767FE3100A558A5 /* search_default.c */; };
 		C1410357275AA9EA004EEC63 /* main.c in Sources */ = {isa = PBXBuildFile; fileRef = C1410356275AA9EA004EEC63 /* main.c */; };
 /* End PBXBuildFile section */
 
@@ -28,6 +29,8 @@
 		C10C75AE27652F2A00A558A5 /* libargp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libargp.a; path = "../../../../opt/homebrew/Cellar/argp-standalone/1.3/lib/libargp.a"; sourceTree = "<group>"; };
 		C10C75B02765375900A558A5 /* options.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = options.h; sourceTree = "<group>"; };
 		C10C75B12765375900A558A5 /* options.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = options.c; sourceTree = "<group>"; };
+		C10C75C72767FD1B00A558A5 /* search_algorithms.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = search_algorithms.h; sourceTree = "<group>"; };
+		C10C75C92767FE3100A558A5 /* search_default.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = search_default.c; sourceTree = "<group>"; };
 		C1410353275AA9EA004EEC63 /* greep */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = greep; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1410356275AA9EA004EEC63 /* main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = main.c; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -52,6 +55,15 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		C10C75C62767FCDA00A558A5 /* search_algorithms */ = {
+			isa = PBXGroup;
+			children = (
+				C10C75C72767FD1B00A558A5 /* search_algorithms.h */,
+				C10C75C92767FE3100A558A5 /* search_default.c */,
+			);
+			path = search_algorithms;
+			sourceTree = "<group>";
+		};
 		C141034A275AA9EA004EEC63 = {
 			isa = PBXGroup;
 			children = (
@@ -72,6 +84,7 @@
 		C1410355275AA9EA004EEC63 /* greep */ = {
 			isa = PBXGroup;
 			children = (
+				C10C75C62767FCDA00A558A5 /* search_algorithms */,
 				C1410356275AA9EA004EEC63 /* main.c */,
 				C10C75B02765375900A558A5 /* options.h */,
 				C10C75B12765375900A558A5 /* options.c */,
@@ -138,6 +151,7 @@
 			files = (
 				C10C75B22765375900A558A5 /* options.c in Sources */,
 				C1410357275AA9EA004EEC63 /* main.c in Sources */,
+				C10C75CA2767FE3100A558A5 /* search_default.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
