@@ -17,7 +17,7 @@
 #include "search_algorithms/search_algorithms.h"
 #include "options.h"
 
-const char *argp_program_version     = "greep 0.6";
+const char *argp_program_version     = "greep 0.9";
 const char *argp_program_bug_address = "<pete@peterichardson.com>";
 
 typedef struct threadargs_t {
@@ -58,8 +58,12 @@ void *threaded_find(void *arg) {
 }
 
 // Run this code whenever a match is found
-void found_callback(const char *filename, unsigned long line_num, const char *line) {
-    printf("%s:%lu %s\n", filename, line_num, line);
+void found_callback(const char *filename, unsigned long line_num, const char *line_start, const char *line_end) {
+    printf("%s:%lu ", filename, line_num);
+    for ( char *p = (char*) line_start; p < line_end; p++) {
+        putchar(*p);
+    }
+    putchar('\n');
 }
 
 int main(int argc, char *argv[]) {

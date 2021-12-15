@@ -23,12 +23,19 @@ void find_bf (const char *search_word,
     unsigned long search_word_maxindex = strlen(search_word) - 1;
     unsigned long i = 0;
     unsigned long lineno = 1;
+    
+    char *line_start = (char *)start;
+    char *line_end = NULL;
 
-    char *c = start;
-    char *end = start + length;
+    char *c = (char *)start;
+    char *end = (char *)start + length;
     while (c < end) {
         //printf("%s: %c, %lu\n", filename, *c, i);
-        if (*c == '\n') lineno++;
+        if (*c == '\n') {
+            i = 0;
+            line_start = c + 1;
+            lineno++;
+        }
         
         if (i != 0 && *c != search_word[i]) {
             i = 0;
@@ -36,7 +43,13 @@ void find_bf (const char *search_word,
         } else if (*c == search_word[i]) {
             if (i==search_word_maxindex ) {
                 i = 0;
-                (*found_callback)(filename, lineno, search_word);
+                // move to end of line (or EOF)
+                for ( ; *c != '\n' && *c != EOF; c++ ) {
+                    // do nothing
+                };
+
+                line_end = c;
+                (*found_callback)(filename, lineno, line_start, line_end);
                 // TODO: might as well skip to the next line, since we've already flagged this one.
                 // TODO: print the whole line.  for now print search_word.
             }

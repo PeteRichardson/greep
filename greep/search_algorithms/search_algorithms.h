@@ -9,7 +9,10 @@
 #ifndef search_algorithms_h
 #define search_algorithms_h
 
-typedef void (*callback_t) (const char *, unsigned long, const char *);
+typedef void (*callback_t) (const char *,  // filename
+                            unsigned long,      // line number
+                            const char *,       // line start
+                            const char *);      // line end
 
 typedef void (*search_alg_t) (const char *,         // search_word
                               const char *,         // filename
