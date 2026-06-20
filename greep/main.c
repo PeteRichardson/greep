@@ -24,32 +24,81 @@ typedef struct threadargs_t {
     callback_t found_callback;
 } threadargs_t;
 
+// Read all of fd into a growable heap buffer. Used for pipes/ttys, which
+// can't be mmap'd and may block waiting for data (e.g. interactive stdin).
+static void *slurp_fd(int fd, size_t *out_len) {
+    size_t cap = 1 << 16;
+    size_t len = 0;
+    char *buf = malloc(cap);
+    if (!buf) return NULL;
+
+    ssize_t n;
+    while ((n = read(fd, buf + len, cap - len)) > 0) {
+        len += (size_t) n;
+        if (len == cap) {
+            cap *= 2;
+            char *grown = realloc(buf, cap);
+            if (!grown) {
+                free(buf);
+                return NULL;
+            }
+            buf = grown;
+        }
+    }
+    *out_len = len;
+    return buf;
+}
+
 void *threaded_find(void *arg) {
     threadargs_t thread_args = *(threadargs_t *) arg;
-    
-    // mmap file
+
     int fdin;
     struct stat sbuf;
     void *src;
-    off_t fsz = 0;
+    int is_mmapped = 0;
+    unsigned long src_len;
+
     if ((fdin = open(thread_args.filename, O_RDONLY)) < 0) {
         fprintf(stderr, "# ERROR: Unable to open file '%s' for reading\n", thread_args.filename);
         return (void*) 0;
     }
     if (fstat(fdin, &sbuf) < 0) {
         fprintf(stderr, "# ERROR: fstat error reading '%s'\n", thread_args.filename);
-        return (void*) 0;
-    }
-    if ((src = mmap(0, sbuf.st_size, PROT_READ, MAP_SHARED, fdin, fsz)) == MAP_FAILED) {
-        fprintf(stderr, "# ERROR: mmap error for '%s'\n", thread_args.filename);
+        close(fdin);
         return (void*) 0;
     }
 
+    if (S_ISREG(sbuf.st_mode)) {
+        // Regular file: mmap it.
+        if ((src = mmap(0, sbuf.st_size, PROT_READ, MAP_SHARED, fdin, 0)) == MAP_FAILED) {
+            fprintf(stderr, "# ERROR: mmap error for '%s'\n", thread_args.filename);
+            close(fdin);
+            return (void*) 0;
+        }
+        is_mmapped = 1;
+        src_len = sbuf.st_size;
+    } else {
+        // Pipe, FIFO, or TTY (e.g. /dev/stdin with no redirection): can't be
+        // mmap'd, so read it instead. This blocks until EOF, matching the
+        // behavior of standard CLI tools when waiting on interactive stdin.
+        size_t len = 0;
+        src = slurp_fd(fdin, &len);
+        if (!src) {
+            fprintf(stderr, "# ERROR: out of memory reading '%s'\n", thread_args.filename);
+            close(fdin);
+            return (void*) 0;
+        }
+        src_len = (unsigned long) len;
+    }
+
     // ACTUALLY DO THE WORK.   Call the specified search algorithm.
-    (thread_args.search_alg)(thread_args.search_word, thread_args.filename, src, sbuf.st_size, &thread_args.found_callback);
-    
-    // munmap file
-    munmap(src, sbuf.st_size);
+    (thread_args.search_alg)(thread_args.search_word, thread_args.filename, src, src_len, &thread_args.found_callback);
+
+    if (is_mmapped) {
+        munmap(src, src_len);
+    } else {
+        free(src);
+    }
     close(fdin);
     return 0;
 }
