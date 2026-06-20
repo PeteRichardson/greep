@@ -23,5 +23,6 @@ typedef void (*search_alg_t) (const char *,         // search_word
 
 //  See various algorithm definitions in http://www-igm.univ-mlv.fr/~lecroq/string/index.html
 void find_bf(const char *search_word, const char *filename, const char *start, const unsigned long length, callback_t *found_callback);
+void find_bmh(const char *search_word, const char *filename, const char *start, const unsigned long length, callback_t *found_callback);
 
 #endif /* search_algorithms_h */
