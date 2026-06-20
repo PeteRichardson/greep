@@ -17,9 +17,6 @@
 #include "search_algorithms/search_algorithms.h"
 #include "options.h"
 
-const char *argp_program_version     = "greep 0.9";
-const char *argp_program_bug_address = "<pete@peterichardson.com>";
-
 typedef struct threadargs_t {
     const char *search_word;
     const char *filename;
@@ -68,12 +65,8 @@ void found_callback(const char *filename, unsigned long line_num, const char *li
 
 int main(int argc, char *argv[]) {
     arguments_t args = ARGUMENT_DEFAULT_VALUES;
-    int err = argp_parse (&argp, argc, argv, 0, 0, &args);
-    if (err != 0) {
-        fprintf(stderr, "# ERROR: Unable to parse command line options: %d", err);
-        exit(EXIT_FAILURE);
-    }
-    
+    parse_args(argc, argv, &args);
+
     if (args.verbose) {
         fprintf(stderr, "# Searching for '%s'\n", args.search_word);
     }

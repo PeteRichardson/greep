@@ -5,11 +5,9 @@ BUILD_DIR := build
 SRCS := $(SRC_DIR)/main.c $(SRC_DIR)/options.c $(SRC_DIR)/search_algorithms/search_default.c
 OBJS := $(SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
-ARGP_PREFIX := $(shell brew --prefix argp-standalone)
-
 CC := cc
-CFLAGS := -std=gnu11 -Wall -I$(SRC_DIR) -I$(ARGP_PREFIX)/include
-LDFLAGS := -L$(ARGP_PREFIX)/lib -largp -lpthread
+CFLAGS := -std=gnu11 -Wall -I$(SRC_DIR)
+LDFLAGS := -lpthread
 
 .PHONY: all clean
 
