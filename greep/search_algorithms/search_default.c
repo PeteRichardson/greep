@@ -44,7 +44,7 @@ void find_bf (const char *search_word,
             if (i==search_word_maxindex ) {
                 i = 0;
                 // move to end of line (or EOF)
-                for ( ; *c != '\n' && *c != EOF; c++ ) {
+                for ( ; c < end && *c != '\n'; c++ ) {
                     // do nothing
                 };
 
@@ -52,8 +52,18 @@ void find_bf (const char *search_word,
                 (*found_callback)(filename, lineno, line_start, line_end);
                 // TODO: might as well skip to the next line, since we've already flagged this one.
                 // TODO: print the whole line.  for now print search_word.
+
+                // c now sits on the line's terminating '\n' (or on `end` if
+                // the line had none). The c++ below jumps past it, so the
+                // top-of-loop '\n' check never sees this newline -- account
+                // for it here so lineno/line_start stay correct.
+                if (c < end) {
+                    lineno++;
+                    line_start = c + 1;
+                }
+            } else {
+                i++;
             }
-            i++;
         }
         c++;
     }
