@@ -1,5 +1,6 @@
 mod filelist;
 mod loader;
+mod options;
 mod search;
 
 fn main() {
