@@ -120,13 +120,15 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "# Searching for '%s'\n", args.search_word);
     }
     
+    search_alg_t chosen_alg = find_algorithm(args.algorithm_code);
+
     pthread_t threads[args.filecount];
     threadargs_t payloads[args.filecount];
     for (int i = 0; i < args.filecount; i++ ) {
         threadargs_t thread_args = {
             .search_word = args.search_word,
             .filename = args.filenames[i],
-            .search_alg = find_bf,
+            .search_alg = chosen_alg,
             .found_callback = found_callback
         };
         payloads[i] = thread_args;
