@@ -13,6 +13,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "search_algorithms/search_algorithms.h"
 #include "options.h"
@@ -22,6 +23,9 @@ typedef struct threadargs_t {
     const char *filename;
     search_alg_t search_alg;
     callback_t found_callback;
+    int timing;
+    long *elapsed_usec_out;
+    unsigned long *bytes_out;
 } threadargs_t;
 
 // Read all of fd into a growable heap buffer. Used for pipes/ttys, which
@@ -91,8 +95,21 @@ void *threaded_find(void *arg) {
         src_len = (unsigned long) len;
     }
 
+    *thread_args.bytes_out = src_len;
+
     // ACTUALLY DO THE WORK.   Call the specified search algorithm.
-    (thread_args.search_alg)(thread_args.search_word, thread_args.filename, src, src_len, &thread_args.found_callback);
+    if (thread_args.timing) {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        (thread_args.search_alg)(thread_args.search_word, thread_args.filename, src, src_len, &thread_args.found_callback);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+
+        long elapsed_usec = (t1.tv_sec - t0.tv_sec) * 1000000L + (t1.tv_nsec - t0.tv_nsec) / 1000L;
+        *thread_args.elapsed_usec_out = elapsed_usec;
+        fprintf(stderr, "#TIMING %8ld %s\n", elapsed_usec, thread_args.filename);
+    } else {
+        (thread_args.search_alg)(thread_args.search_word, thread_args.filename, src, src_len, &thread_args.found_callback);
+    }
 
     if (is_mmapped) {
         munmap(src, src_len);
@@ -116,24 +133,32 @@ int main(int argc, char *argv[]) {
     arguments_t args = ARGUMENT_DEFAULT_VALUES;
     parse_args(argc, argv, &args);
 
+    search_alg_t chosen_alg = find_algorithm(args.algorithm_code);
+
     if (args.verbose) {
         fprintf(stderr, "# Searching for '%s'\n", args.search_word);
     }
-    
-    search_alg_t chosen_alg = find_algorithm(args.algorithm_code);
 
     pthread_t threads[args.filecount];
     threadargs_t payloads[args.filecount];
+    long elapsed_usec[args.filecount];
+    unsigned long bytes_searched[args.filecount];
+
     for (int i = 0; i < args.filecount; i++ ) {
+        elapsed_usec[i] = 0;
+        bytes_searched[i] = 0;
         threadargs_t thread_args = {
             .search_word = args.search_word,
             .filename = args.filenames[i],
             .search_alg = chosen_alg,
-            .found_callback = found_callback
+            .found_callback = found_callback,
+            .timing = args.timing,
+            .elapsed_usec_out = &elapsed_usec[i],
+            .bytes_out = &bytes_searched[i]
         };
         payloads[i] = thread_args;
     }
-        
+
     for (int i = 0; i < args.filecount; i++ ) {
         if (args.verbose) {
             fprintf(stderr, "# Processing file %d: %s\n", i, args.filenames[i]);
@@ -148,6 +173,29 @@ int main(int argc, char *argv[]) {
     for (int i=0; i<args.filecount; i++) {
         pthread_join(threads[i], NULL);
     }
-    
+
+    if (args.timing) {
+        fprintf(stderr, "#COMMAND");
+        for (int i = 0; i < argc; i++) {
+            fprintf(stderr, " %s", argv[i]);
+        }
+        fprintf(stderr, "\n");
+
+        long min = elapsed_usec[0];
+        long max = elapsed_usec[0];
+        long total = 0;
+        unsigned long total_bytes = 0;
+        for (int i = 0; i < args.filecount; i++) {
+            if (elapsed_usec[i] < min) min = elapsed_usec[i];
+            if (elapsed_usec[i] > max) max = elapsed_usec[i];
+            total += elapsed_usec[i];
+            total_bytes += bytes_searched[i];
+        }
+        long avg = total / args.filecount;
+
+        fprintf(stderr, "#TIMING_SUMMARY algorithm=%s files=%d bytes=%lu min=%ld avg=%ld max=%ld\n",
+                args.algorithm_code, args.filecount, total_bytes, min, avg, max);
+    }
+
     exit(EXIT_SUCCESS);
 }

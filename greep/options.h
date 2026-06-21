@@ -10,6 +10,7 @@
 
 typedef struct arguments_t {
     int  verbose;
+    int  timing;
     char *search_word;
     char **filenames;
     int  filecount;
@@ -21,6 +22,7 @@ static char *default_input_files[] = { "/dev/stdin" };
 
 static arguments_t ARGUMENT_DEFAULT_VALUES = {
     .verbose = 0,
+    .timing = 0,
     .search_word = NULL,
     .filecount = 1,
     .filenames = (char**)default_input_files,

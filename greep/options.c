@@ -14,11 +14,12 @@
 #include "search_algorithms/search_algorithms.h"
 
 static char usage[] =
-    "usage: greep [-v] [-a ALGORITHM] [-f FILELIST] STRING [FILES...]\n"
+    "usage: greep [-v] [-t] [-a ALGORITHM] [-f FILELIST] STRING [FILES...]\n"
     "       greep -l\n";
 
 static struct option long_options[] = {
     {"verbose",   no_argument,       0, 'v'},
+    {"timing",    no_argument,       0, 't'},
     {"algorithm", required_argument, 0, 'a'},
     {"list",      no_argument,       0, 'l'},
     // TODO: --dump-filelist <path> to capture the resolved file set for reuse
@@ -29,10 +30,14 @@ static struct option long_options[] = {
 void parse_args(int argc, char *argv[], arguments_t *args)
 {
     int opt;
-    while ((opt = getopt_long(argc, argv, "va:lf:", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vta:lf:", long_options, NULL)) != -1) {
         switch (opt) {
             case 'v':
                 args->verbose = 1;
+                break;
+
+            case 't':
+                args->timing = 1;
                 break;
 
             case 'a':
