@@ -14,6 +14,7 @@ typedef struct arguments_t {
     char **filenames;
     int  filecount;
     const char *algorithm_code;
+    const char *filelist_path;
 } arguments_t;
 
 static char *default_input_files[] = { "/dev/stdin" };
@@ -23,7 +24,8 @@ static arguments_t ARGUMENT_DEFAULT_VALUES = {
     .search_word = NULL,
     .filecount = 1,
     .filenames = (char**)default_input_files,
-    .algorithm_code = "bf"
+    .algorithm_code = "bf",
+    .filelist_path = NULL
 };
 
 void parse_args(int argc, char *argv[], arguments_t *args);
