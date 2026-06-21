@@ -1,3 +1,4 @@
+mod loader;
 mod search;
 
 fn main() {
