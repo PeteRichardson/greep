@@ -31,8 +31,14 @@ static void string_list_init(string_list_t *list) {
 
 static void string_list_append(string_list_t *list, const char *str) {
     if (list->count == list->capacity) {
-        list->capacity *= 2;
-        list->items = realloc(list->items, sizeof(char *) * list->capacity);
+        int new_capacity = list->capacity * 2;
+        char **new_items = realloc(list->items, sizeof(char *) * new_capacity);
+        if (!new_items) {
+            fprintf(stderr, "# ERROR: out of memory while building file list\n");
+            exit(EXIT_FAILURE);
+        }
+        list->items = new_items;
+        list->capacity = new_capacity;
     }
     list->items[list->count++] = strdup(str);
 }
