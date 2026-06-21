@@ -2,7 +2,7 @@ TARGET := greep
 SRC_DIR := greep
 BUILD_DIR := build
 
-SRCS := $(SRC_DIR)/main.c $(SRC_DIR)/options.c \
+SRCS := $(SRC_DIR)/main.c $(SRC_DIR)/options.c $(SRC_DIR)/filelist.c \
         $(SRC_DIR)/search_algorithms/search_default.c \
         $(SRC_DIR)/search_algorithms/search_bmh.c \
         $(SRC_DIR)/search_algorithms/search_algorithms.c
