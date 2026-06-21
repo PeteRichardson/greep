@@ -21,7 +21,8 @@ fn unknown_algorithm_exits_nonzero() {
     greep()
         .args(["-a", "bogus", "word", "/dev/null"])
         .assert()
-        .failure();
+        .failure()
+        .stderr(predicates::str::contains("unknown algorithm"));
 }
 
 #[test]
@@ -58,7 +59,7 @@ fn directory_argument_expands_and_skips_dotfiles() {
 
 #[test]
 fn timing_summary_on_all_failed_files_is_zeroed_not_crashed() {
-    let missing = std::env::temp_dir().join("greep-cli-test-missing-file-xyz-12345");
+    let missing = std::env::temp_dir().join(format!("greep-cli-test-missing-{}", std::process::id()));
 
     greep()
         .args(["-t", "word", missing.to_str().unwrap()])

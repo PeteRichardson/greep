@@ -22,7 +22,7 @@ impl SearchAlgorithm for Bf {
             }
             let line = &buf[line_start..line_end];
 
-            if let Some(_) = find_first(line, word) {
+            if find_first(line, word).is_some() {
                 matches.push(Match {
                     line_number,
                     line: String::from_utf8_lossy(line).into_owned(),

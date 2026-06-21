@@ -72,6 +72,9 @@ fn main() {
         for m in &result.matches {
             println!("{}:{} {}", result.filename, m.line_number, m.line);
         }
+        if let Some(err) = &result.error {
+            eprintln!("# ERROR: {}: {}", result.filename, err);
+        }
         if timing {
             if let Some(elapsed) = result.elapsed {
                 eprintln!("#TIMING {:8} {}", elapsed.as_micros(), result.filename);

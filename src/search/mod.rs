@@ -60,6 +60,11 @@ mod tests {
                 b"line one\nline two has end",
                 vec![Match { line_number: 2, line: "line two has end".to_string() }],
             ),
+            (
+                "aa",
+                b"aaaa\n" as &[u8],
+                vec![Match { line_number: 1, line: "aaaa".to_string() }],
+            ),
         ]
     }
 
@@ -71,6 +76,13 @@ mod tests {
                 let actual = alg.search(word, buf);
                 assert_eq!(actual, expected, "algorithm {code} on word {word:?}");
             }
+        }
+    }
+
+    #[test]
+    fn all_listed_algorithms_are_findable() {
+        for (code, _) in list_algorithms() {
+            assert!(find_algorithm(code).is_some(), "algorithm '{code}' is listed but not findable");
         }
     }
 }
