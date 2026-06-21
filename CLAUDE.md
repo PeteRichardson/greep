@@ -22,11 +22,24 @@ There is no test target/suite in this project currently.
 ## Running
 
 ```
-./build/greep STRING [FILES...]
+./build/greep [-v] [-t] [-a ALGORITHM] [-f FILELIST] STRING [FILES...]
+greep -l
 ```
 
-If no files are given, defaults to reading from `/dev/stdin`. `-v`/`--verbose` prints
-progress to stderr.
+If no files are given, defaults to reading from `/dev/stdin`. If a given file path is
+a directory, it is searched recursively (dotfiles and dotdirs are skipped).
+
+- `-v`/`--verbose` prints progress (which files are being processed) to stderr.
+- `-t`/`--timing` prints per-file timing (`#TIMING <microseconds> <filename>`) to
+  stderr as each file finishes, then a `#COMMAND` line (the full invocation) and a
+  `#TIMING_SUMMARY` line (min/avg/max microseconds, file count, total bytes) after
+  all files are done. Independent of `-v` — both can be combined.
+- `-a`/`--algorithm CODE` selects the search algorithm (default `bf`). Run `greep -l`
+  to list available codes.
+- `-l`/`--list` prints the available algorithm codes and exits.
+- `-f`/`--filelist PATH` reads the file list (one path per line) from `PATH` instead
+  of positional file arguments. Cannot be combined with positional file arguments.
+  A single run always uses one algorithm for all files.
 
 ## Architecture
 
@@ -40,9 +53,15 @@ progress to stderr.
   signature `search_alg_t` (`search_algorithms.h`): given a search word and an mmap'd
   buffer, it scans for matches and invokes a `callback_t` per match with the file name,
   line number, and pointers to the start/end of the matching line.
-  - `search_default.c` implements `find_bf`, a brute-force line-scanning search. This is
-    the only algorithm wired up in `main.c` today; the architecture anticipates more
-    being added under this directory and selected via `search_alg_t` function pointers.
+  - `search_default.c` implements `find_bf`, a brute-force line-scanning search.
+  - `search_bmh.c` implements `find_bmh`, a Boyer-Moore-Horspool search.
+  - `search_algorithms.c` is a small registry (`find_algorithm`/`list_algorithms`)
+    mapping `-a` codes (`bf`, `bmh`) to these implementations. A single run uses one
+    algorithm for all files; `main.c` resolves it once via `find_algorithm` before
+    spawning threads.
+- `greep/filelist.c`/`filelist.h` — resolves the final file list for a run: reads
+  `-f/--filelist` files (`read_filelist`) and recursively expands any directory
+  arguments into their regular files, skipping dotfiles/dotdirs (`expand_paths`).
 
 The threading model in `main.c` creates and joins one thread per file with no upper
 bound on concurrency — if you need to search large file sets, an algorithm or threading
