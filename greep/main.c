@@ -26,6 +26,7 @@ typedef struct threadargs_t {
     int timing;
     long *elapsed_usec_out;
     unsigned long *bytes_out;
+    int *ok_out;
 } threadargs_t;
 
 // Read all of fd into a growable heap buffer. Used for pipes/ttys, which
@@ -111,6 +112,8 @@ void *threaded_find(void *arg) {
         (thread_args.search_alg)(thread_args.search_word, thread_args.filename, src, src_len, &thread_args.found_callback);
     }
 
+    *thread_args.ok_out = 1;
+
     if (is_mmapped) {
         munmap(src, src_len);
     } else {
@@ -143,10 +146,12 @@ int main(int argc, char *argv[]) {
     threadargs_t payloads[args.filecount];
     long elapsed_usec[args.filecount];
     unsigned long bytes_searched[args.filecount];
+    int file_ok[args.filecount];
 
     for (int i = 0; i < args.filecount; i++ ) {
         elapsed_usec[i] = 0;
         bytes_searched[i] = 0;
+        file_ok[i] = 0;
         threadargs_t thread_args = {
             .search_word = args.search_word,
             .filename = args.filenames[i],
@@ -154,7 +159,8 @@ int main(int argc, char *argv[]) {
             .found_callback = found_callback,
             .timing = args.timing,
             .elapsed_usec_out = &elapsed_usec[i],
-            .bytes_out = &bytes_searched[i]
+            .bytes_out = &bytes_searched[i],
+            .ok_out = &file_ok[i]
         };
         payloads[i] = thread_args;
     }
@@ -165,7 +171,7 @@ int main(int argc, char *argv[]) {
         }
         int err = pthread_create(&threads[i], NULL, &threaded_find, &payloads[i]);
         if (err) {
-            printf("%s\n", strerror(err), stderr);
+            fprintf(stderr, "%s\n", strerror(err));
             exit(EXIT_FAILURE);
         }
     }
@@ -181,20 +187,37 @@ int main(int argc, char *argv[]) {
         }
         fprintf(stderr, "\n");
 
-        long min = elapsed_usec[0];
-        long max = elapsed_usec[0];
-        long total = 0;
-        unsigned long total_bytes = 0;
+        int ok_count = 0;
         for (int i = 0; i < args.filecount; i++) {
-            if (elapsed_usec[i] < min) min = elapsed_usec[i];
-            if (elapsed_usec[i] > max) max = elapsed_usec[i];
-            total += elapsed_usec[i];
-            total_bytes += bytes_searched[i];
+            if (file_ok[i]) ok_count++;
         }
-        long avg = total / args.filecount;
 
-        fprintf(stderr, "#TIMING_SUMMARY algorithm=%s files=%d bytes=%lu min=%ld avg=%ld max=%ld\n",
-                args.algorithm_code, args.filecount, total_bytes, min, avg, max);
+        if (args.filecount == 0 || ok_count == 0) {
+            fprintf(stderr, "#TIMING_SUMMARY algorithm=%s files=%d errors=%d bytes=0 min=0 avg=0 max=0\n",
+                    args.algorithm_code, args.filecount, args.filecount - ok_count);
+        } else {
+            long min = 0;
+            long max = 0;
+            long total = 0;
+            unsigned long total_bytes = 0;
+            int first = 1;
+            for (int i = 0; i < args.filecount; i++) {
+                if (!file_ok[i]) continue;
+                if (first) {
+                    min = elapsed_usec[i];
+                    max = elapsed_usec[i];
+                    first = 0;
+                }
+                if (elapsed_usec[i] < min) min = elapsed_usec[i];
+                if (elapsed_usec[i] > max) max = elapsed_usec[i];
+                total += elapsed_usec[i];
+                total_bytes += bytes_searched[i];
+            }
+            long avg = total / ok_count;
+
+            fprintf(stderr, "#TIMING_SUMMARY algorithm=%s files=%d errors=%d bytes=%lu min=%ld avg=%ld max=%ld\n",
+                    args.algorithm_code, args.filecount, args.filecount - ok_count, total_bytes, min, avg, max);
+        }
     }
 
     exit(EXIT_SUCCESS);
