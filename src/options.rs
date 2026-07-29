@@ -5,8 +5,17 @@ use clap::Parser;
 use crate::filelist::{expand_paths, read_filelist};
 use crate::search::{find_algorithm, list_algorithms};
 
+/// Appended to `--help`. The directory walk's skipping rules cannot be inferred
+/// from the flag list, and leaving them undocumented was the defect in the
+/// symlink issue — the skipping itself matches `grep -r` and is intended.
+const DIRECTORY_WALK_HELP: &str = concat!(
+    "Directory arguments are searched recursively.\n",
+    "Dotfiles, dot-directories, and symlinks encountered during the walk are\n",
+    "skipped; a symlink named directly on the command line is still followed.",
+);
+
 #[derive(Parser, Debug)]
-#[command(name = "greep", about = "A simple grep")]
+#[command(name = "greep", about = "A simple grep", after_help = DIRECTORY_WALK_HELP)]
 pub struct Args {
     #[arg(short, long)]
     pub verbose: bool,

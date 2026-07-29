@@ -165,3 +165,17 @@ fn multi_file_output_is_in_argument_order() {
 
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn help_documents_directory_walk_skipping() {
+    // Issue #24: skipping symlinks matches `grep -r` and is correct; the defect
+    // was that it happened silently. Lock the disclosure into --help so it
+    // cannot be dropped without a failing test.
+    greep()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("recursively"))
+        .stdout(predicates::str::contains("symlink"))
+        .stdout(predicates::str::contains("Dotfiles"));
+}
