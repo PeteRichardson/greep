@@ -32,7 +32,7 @@ pub struct Args {
     #[arg(short, long)]
     pub filelist: Option<PathBuf>,
 
-    #[arg(value_name = "STRING")]
+    #[arg(value_name = "STRING", required_unless_present = "list")]
     pub search_word: Option<String>,
 
     #[arg(value_name = "FILES")]
@@ -41,6 +41,8 @@ pub struct Args {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    #[error("search string must not be empty")]
+    EmptySearchWord,
     #[error("unknown algorithm '{0}'. Run 'greep -l' to see available algorithms.")]
     UnknownAlgorithm(String),
     #[error("cannot combine -f/--filelist with positional file arguments")]
@@ -64,7 +66,18 @@ pub fn print_algorithm_list() {
     }
 }
 
-pub fn resolve(args: Args, search_word: String) -> Result<ResolvedArgs, AppError> {
+pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
+    // Guard at the argument boundary, so neither algorithm needs an empty-word
+    // path. `grep ""` matches every line; silently matching nothing was worse
+    // than either answer.
+    // clap enforces `required_unless_present = "list"`, and `--list` returns in
+    // main before this runs, so `None` is unreachable in practice. Folding it
+    // into the empty case degrades gracefully instead of asserting.
+    let search_word = args.search_word.unwrap_or_default();
+    if search_word.is_empty() {
+        return Err(AppError::EmptySearchWord);
+    }
+
     if find_algorithm(&args.algorithm).is_none() {
         return Err(AppError::UnknownAlgorithm(args.algorithm));
     }
@@ -101,16 +114,24 @@ mod tests {
             algorithm: "bf".to_string(),
             list: false,
             filelist: None,
-            search_word: None,
+            search_word: Some("word".to_string()),
             files: vec![],
         }
+    }
+
+    #[test]
+    fn empty_search_word_errors() {
+        let mut args = base_args();
+        args.search_word = Some(String::new());
+        let err = resolve(args).unwrap_err();
+        assert!(matches!(err, AppError::EmptySearchWord));
     }
 
     #[test]
     fn unknown_algorithm_errors() {
         let mut args = base_args();
         args.algorithm = "nope".to_string();
-        let err = resolve(args, "word".to_string()).unwrap_err();
+        let err = resolve(args).unwrap_err();
         assert!(matches!(err, AppError::UnknownAlgorithm(code) if code == "nope"));
     }
 
@@ -119,14 +140,14 @@ mod tests {
         let mut args = base_args();
         args.filelist = Some(PathBuf::from("/tmp/somelist"));
         args.files = vec!["a.txt".to_string()];
-        let err = resolve(args, "word".to_string()).unwrap_err();
+        let err = resolve(args).unwrap_err();
         assert!(matches!(err, AppError::ConflictingFileArgs));
     }
 
     #[test]
     fn defaults_to_stdin_when_no_files_given() {
         let args = base_args();
-        let resolved = resolve(args, "word".to_string()).unwrap();
+        let resolved = resolve(args).unwrap();
         assert_eq!(resolved.files, vec!["/dev/stdin".to_string()]);
     }
 
@@ -134,7 +155,7 @@ mod tests {
     fn uses_positional_files_when_given() {
         let mut args = base_args();
         args.files = vec!["a.txt".to_string(), "b.txt".to_string()];
-        let resolved = resolve(args, "word".to_string()).unwrap();
+        let resolved = resolve(args).unwrap();
         assert_eq!(
             resolved.files,
             vec!["a.txt".to_string(), "b.txt".to_string()]

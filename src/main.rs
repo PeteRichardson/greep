@@ -52,13 +52,7 @@ fn run() -> i32 {
         return EXIT_MATCH;
     }
 
-    let Some(search_word) = args.search_word.clone() else {
-        eprintln!("usage: greep [-v] [-t] [-a ALGORITHM] [-f FILELIST] STRING [FILES...]");
-        eprintln!("       greep -l");
-        return EXIT_ERROR;
-    };
-
-    let resolved = match resolve(args, search_word) {
+    let resolved = match resolve(args) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");

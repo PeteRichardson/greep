@@ -216,3 +216,25 @@ fn binary_file_without_a_match_prints_nothing() {
 
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn empty_search_word_is_rejected() {
+    // grep "" matches every line; greep silently matched nothing, which is the
+    // worst of both. Reject it at the argument boundary instead.
+    greep()
+        .args(["", "/dev/null"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("empty"));
+}
+
+#[test]
+fn missing_search_word_reports_clap_usage_not_a_hand_rolled_one() {
+    greep()
+        .assert()
+        .code(2)
+        // clap's generated usage, capital U...
+        .stderr(predicates::str::contains("Usage:"))
+        // ...and not the hand-rolled string that duplicated it.
+        .stderr(predicates::str::contains("usage: greep [-v]").not());
+}
