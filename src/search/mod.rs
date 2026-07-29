@@ -66,6 +66,11 @@ mod tests {
                     line: "aaaa".to_string(),
                 }],
             ),
+            // A search word containing a newline can never match: search is
+            // line-scoped, and no line contains a '\n'. Guards against an
+            // algorithm matching across a line boundary and reporting a
+            // multi-line "line".
+            ("alpha\nbeta", b"alpha\nbeta\n", vec![]),
         ]
     }
 
