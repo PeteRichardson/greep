@@ -128,7 +128,7 @@ Usage: greep [OPTIONS] [STRING] [FILES]...
 
 | Argument | Description |
 |----------|-------------|
-| `STRING` | The literal string to search for. Required unless `-l` is given. |
+| `STRING` | The literal string to search for. Required unless `-l` is given, and must not be empty. |
 | `FILES...` | Files or directories to search. Directories are walked recursively. Defaults to `/dev/stdin` when omitted. |
 
 ### Options
@@ -305,6 +305,7 @@ These are current, verified behaviors rather than hypotheticals. Each links to i
 
 - **At most one match reported per line.** A line containing the search string three times is printed once. Both algorithms behave this way by design.
 - **Literal strings only.** No regular expressions, no case-insensitive matching, no word-boundary matching. There is no `-i`, `-w`, `-c`, `-q`, or `-n`.
+- **An empty search string is an error, not a wildcard.** `grep ""` matches every line; `greep ""` exits `2` with `error: search string must not be empty`. Rejecting it was chosen over silently matching nothing, which is what it used to do.
 - **Binary detection has a bounded window and no override.** Only the first 8 KiB of a file is inspected for a NUL byte, so a file that turns binary later is treated as text. There is also no `grep -a`/`--text` equivalent to force a binary file to print its matching lines.
 - **A search string containing a newline never matches.** Search is line-scoped and no line contains a newline, so both algorithms agree on this and exit `1`.
 - **Hidden files are always skipped** ([#25](https://github.com/PeteRichardson/greep/issues/25)). Dotfiles and dot-directories are excluded from directory walks, with no opt-out flag.
