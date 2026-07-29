@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      # Cargo.toml's [lints.clippy] table sets pedantic to warn, so a bare
+      # `-D warnings` would make pedantic blocking. Allow the group back here;
+      # the advisory job below is what reports it.
+      - name: Clippy (default lints, blocking)
+        run: cargo clippy --all-targets --locked -- -D warnings -A clippy::pedantic
+
+      - name: Tests
+        run: cargo test --locked
+
+  clippy-pedantic:
+    name: clippy pedantic (advisory)
+    runs-on: ubuntu-latest
+    # Advisory only: findings here never block a merge. Read the job log to see
+    # them. Do not add this job to branch protection's required checks.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # No -A here, so the pedantic group from [lints.clippy] applies.
+      - name: Clippy (pedantic)
+        run: cargo clippy --all-targets --locked -- -D warnings
