@@ -3,6 +3,10 @@ name = "greep"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+# Driven by the dependency tree, not by this crate's own source: clap 4.x and
+# assert_cmd both declare 1.85. Declared here so a dependency raising its floor
+# surfaces as a build error rather than silently drifting from the README.
+rust-version = "1.85"
 
 [[bin]]
 name = "greep"

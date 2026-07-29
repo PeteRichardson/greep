@@ -55,11 +55,11 @@ It is deliberately not a grep replacement. There are no regular expressions, no 
 
 - **Rust toolchain** (`cargo`) — install via [rustup](https://rustup.rs).
 
-Rust **1.65 or later** is required (the source uses `let ... else`, stabilized in 1.65).
-
-<!-- 🖊 TODO: Cargo.toml declares `edition = "2021"` but no `rust-version`. The
-     1.65 floor above is inferred from the code, not declared. Consider adding
-     `rust-version = "1.65"` to Cargo.toml so it's enforced rather than inferred. -->
+Rust **1.85 or later** is required. This is declared as `rust-version` in
+`Cargo.toml`, so Cargo enforces it rather than leaving you to discover it at a
+compile error. The floor comes from the dependency tree — `clap` and
+`assert_cmd` both require 1.85 — not from greep's own source, which needs
+nothing newer than 1.65.
 
 No system libraries are needed. `clap`, `memmap2`, and `thiserror` are pulled in by Cargo.
 
