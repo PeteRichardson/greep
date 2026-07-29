@@ -28,12 +28,9 @@ pub fn expand_paths(paths: Vec<String>) -> Vec<String> {
 }
 
 fn walk_directory(dir: &Path, out: &mut Vec<String>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => {
-            eprintln!("error: unable to open directory '{}'", dir.display());
-            return;
-        }
+    let Ok(entries) = fs::read_dir(dir) else {
+        eprintln!("error: unable to open directory '{}'", dir.display());
+        return;
     };
 
     for entry in entries.flatten() {
