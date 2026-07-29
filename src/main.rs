@@ -20,6 +20,10 @@ const EXIT_ERROR: i32 = 2;
 struct PerFileResult {
     filename: String,
     matches: Vec<Match>,
+    /// The file contains a NUL in its first block. Its matches are still counted
+    /// for exit status, but the matching lines are never written out — they are
+    /// arbitrary bytes and would corrupt the terminal.
+    binary: bool,
     bytes: u64,
     elapsed: Option<Duration>,
     error: Option<String>,
@@ -108,14 +112,23 @@ fn run() -> i32 {
             Err(payload) => PerFileResult {
                 filename: name,
                 matches: Vec::new(),
+                binary: false,
                 bytes: 0,
                 elapsed: None,
                 error: Some(panic_message(&*payload)),
             },
         };
 
-        for m in &result.matches {
-            let _ = writeln!(out, "{}:{} {}", result.filename, m.line_number, m.line);
+        if result.binary {
+            // Report that it matched without emitting the bytes themselves.
+            // A file with no match prints nothing at all, as grep does.
+            if !result.matches.is_empty() {
+                let _ = writeln!(out, "Binary file {} matches", result.filename);
+            }
+        } else {
+            for m in &result.matches {
+                let _ = writeln!(out, "{}:{} {}", result.filename, m.line_number, m.line);
+            }
         }
         any_match |= !result.matches.is_empty();
 
@@ -186,6 +199,7 @@ fn run_file(
             return PerFileResult {
                 filename: filename.to_string(),
                 matches: Vec::new(),
+                binary: false,
                 bytes: 0,
                 elapsed: None,
                 error: Some(e.to_string()),
@@ -194,6 +208,7 @@ fn run_file(
     };
 
     let bytes = loaded.as_bytes().len() as u64;
+    let binary = loader::looks_binary(loaded.as_bytes());
 
     let (matches, elapsed) = if timing {
         let start = Instant::now();
@@ -206,6 +221,7 @@ fn run_file(
     PerFileResult {
         filename: filename.to_string(),
         matches,
+        binary,
         bytes,
         elapsed,
         error: None,

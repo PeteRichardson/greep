@@ -4,6 +4,17 @@ use std::path::Path;
 
 pub const MMAP_THRESHOLD_BYTES: u64 = 1 << 30;
 
+/// How much of a file is inspected when deciding whether it is binary. Bounded
+/// so the check stays O(1) regardless of file size — a NUL past this point is
+/// not detected, which is the same trade `grep` makes with its first read buffer.
+pub const BINARY_SNIFF_BYTES: usize = 8192;
+
+/// True if the leading `BINARY_SNIFF_BYTES` contain a NUL byte.
+pub fn looks_binary(buf: &[u8]) -> bool {
+    let window = &buf[..buf.len().min(BINARY_SNIFF_BYTES)];
+    window.contains(&0)
+}
+
 pub enum Loaded {
     Owned(Vec<u8>),
     Mapped(memmap2::Mmap),
@@ -54,6 +65,32 @@ mod tests {
         assert!(matches!(loaded, Loaded::Owned(_)));
         assert_eq!(loaded.as_bytes(), b"hello world\n");
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn text_is_not_binary() {
+        assert!(!looks_binary(b""));
+        assert!(!looks_binary(b"hello world\nsecond line\n"));
+    }
+
+    #[test]
+    fn nul_byte_marks_binary() {
+        assert!(looks_binary(b"\x7fELF\x02\x01\x01\x00"));
+        assert!(looks_binary(b"text then \x00 a nul"));
+    }
+
+    #[test]
+    fn nul_beyond_the_sniff_window_is_not_detected() {
+        // Documents the bound rather than asserting it is ideal: the check is
+        // deliberately O(1), so a NUL this far in is invisible to it.
+        let mut buf = vec![b'a'; BINARY_SNIFF_BYTES + 100];
+        buf[BINARY_SNIFF_BYTES + 50] = 0;
+        assert!(!looks_binary(&buf));
+
+        // ...but one at the last byte of the window is caught.
+        let mut buf = vec![b'a'; BINARY_SNIFF_BYTES + 100];
+        buf[BINARY_SNIFF_BYTES - 1] = 0;
+        assert!(looks_binary(&buf));
     }
 
     #[test]

@@ -179,3 +179,40 @@ fn help_documents_directory_walk_skipping() {
         .stdout(predicates::str::contains("symlink"))
         .stdout(predicates::str::contains("Dotfiles"));
 }
+
+#[test]
+fn binary_file_with_a_match_reports_it_without_dumping_bytes() {
+    let dir = std::env::temp_dir().join(format!("greep-cli-test-bin-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("blob.bin");
+    // NUL in the first block, plus the search word further in.
+    let mut data = vec![0x7f, b'E', b'L', b'F', 0x00, 0x01, 0x02, 0x03];
+    data.extend_from_slice(b"\x01\x02needle\x03\x04");
+    fs::write(&file, &data).unwrap();
+
+    let expected = format!("Binary file {} matches\n", file.display());
+
+    greep()
+        .args(["needle", file.to_str().unwrap()])
+        .assert()
+        .code(0)
+        .stdout(expected);
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn binary_file_without_a_match_prints_nothing() {
+    let dir = std::env::temp_dir().join(format!("greep-cli-test-binnm-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("blob.bin");
+    fs::write(&file, [0x7f, b'E', b'L', b'F', 0x00, 0x01, 0x02, 0x03]).unwrap();
+
+    greep()
+        .args(["needle", file.to_str().unwrap()])
+        .assert()
+        .code(1)
+        .stdout(predicates::str::is_empty());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
