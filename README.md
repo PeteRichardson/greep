@@ -46,6 +46,7 @@ It is deliberately not a grep replacement. There are no regular expressions, no 
 - **One thread per file** — files are searched in parallel, but output is emitted in argument order, so results are deterministic regardless of which thread finishes first.
 - **Size-aware file loading** — files under 1 GiB are read into memory; files at or above 1 GiB are memory-mapped.
 - **Recursive directory search** — pass a directory and it is walked automatically. No `-r` flag needed.
+- **Binary files don't corrupt your terminal** — a file with a NUL byte in its first 8 KiB reports `Binary file X matches` instead of writing raw bytes to stdout, as grep does.
 - **grep-compatible exit status** — `0` matched, `1` no match, `2` error, so `greep ... && ...` works the way you'd expect.
 - **Batch input** — `-f FILELIST` reads paths from a file, one per line.
 
@@ -304,7 +305,7 @@ These are current, verified behaviors rather than hypotheticals. Each links to i
 
 - **At most one match reported per line.** A line containing the search string three times is printed once. Both algorithms behave this way by design.
 - **Literal strings only.** No regular expressions, no case-insensitive matching, no word-boundary matching. There is no `-i`, `-w`, `-c`, `-q`, or `-n`.
-- **Binary files are printed raw** ([#10](https://github.com/PeteRichardson/greep/issues/10)). There is no NUL detection, so searching a binary emits raw control bytes to stdout and can corrupt terminal state. Redirect to a file, or avoid binaries, until this is fixed.
+- **Binary detection has a bounded window and no override.** Only the first 8 KiB of a file is inspected for a NUL byte, so a file that turns binary later is treated as text. There is also no `grep -a`/`--text` equivalent to force a binary file to print its matching lines.
 - **A search string containing a newline never matches.** Search is line-scoped and no line contains a newline, so both algorithms agree on this and exit `1`.
 - **Hidden files are always skipped** ([#25](https://github.com/PeteRichardson/greep/issues/25)). Dotfiles and dot-directories are excluded from directory walks, with no opt-out flag.
 - **Symlinks inside a directory are skipped silently** ([#24](https://github.com/PeteRichardson/greep/issues/24)). This matches `grep -r`'s default. Note the asymmetry: a symlink passed *explicitly* as an argument **is** followed — only the directory walk skips them.
