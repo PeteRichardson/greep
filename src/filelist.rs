@@ -31,7 +31,7 @@ fn walk_directory(dir: &Path, out: &mut Vec<String>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => {
-            eprintln!("# ERROR: unable to open directory '{}'", dir.display());
+            eprintln!("error: unable to open directory '{}'", dir.display());
             return;
         }
     };
