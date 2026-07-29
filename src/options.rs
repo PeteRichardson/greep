@@ -126,6 +126,9 @@ mod tests {
         let mut args = base_args();
         args.files = vec!["a.txt".to_string(), "b.txt".to_string()];
         let resolved = resolve(args, "word".to_string()).unwrap();
-        assert_eq!(resolved.files, vec!["a.txt".to_string(), "b.txt".to_string()]);
+        assert_eq!(
+            resolved.files,
+            vec!["a.txt".to_string(), "b.txt".to_string()]
+        );
     }
 }

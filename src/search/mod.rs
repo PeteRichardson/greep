@@ -14,10 +14,7 @@ pub trait SearchAlgorithm {
     fn search(&self, word: &str, buf: &[u8]) -> Vec<Match>;
 }
 
-const ALGORITHMS: &[(&str, &str)] = &[
-    ("bf", "brute force"),
-    ("bmh", "boyer-moore-horspool"),
-];
+const ALGORITHMS: &[(&str, &str)] = &[("bf", "brute force"), ("bmh", "boyer-moore-horspool")];
 
 pub fn find_algorithm(code: &str) -> Option<Box<dyn SearchAlgorithm>> {
     match code {
@@ -41,29 +38,33 @@ mod tests {
                 "needle",
                 b"hay needle stack\nneedle needle\nno match here\n",
                 vec![
-                    Match { line_number: 1, line: "hay needle stack".to_string() },
-                    Match { line_number: 2, line: "needle needle".to_string() },
+                    Match {
+                        line_number: 1,
+                        line: "hay needle stack".to_string(),
+                    },
+                    Match {
+                        line_number: 2,
+                        line: "needle needle".to_string(),
+                    },
                 ],
             ),
-            (
-                "missing",
-                b"nothing to see\nhere either\n",
-                vec![],
-            ),
-            (
-                "toolong",
-                b"hi",
-                vec![],
-            ),
+            ("missing", b"nothing to see\nhere either\n", vec![]),
+            ("toolong", b"hi", vec![]),
             (
                 "end",
                 b"line one\nline two has end",
-                vec![Match { line_number: 2, line: "line two has end".to_string() }],
+                vec![Match {
+                    line_number: 2,
+                    line: "line two has end".to_string(),
+                }],
             ),
             (
                 "aa",
                 b"aaaa\n" as &[u8],
-                vec![Match { line_number: 1, line: "aaaa".to_string() }],
+                vec![Match {
+                    line_number: 1,
+                    line: "aaaa".to_string(),
+                }],
             ),
         ]
     }
@@ -82,7 +83,10 @@ mod tests {
     #[test]
     fn all_listed_algorithms_are_findable() {
         for (code, _) in list_algorithms() {
-            assert!(find_algorithm(code).is_some(), "algorithm '{code}' is listed but not findable");
+            assert!(
+                find_algorithm(code).is_some(),
+                "algorithm '{code}' is listed but not findable"
+            );
         }
     }
 }

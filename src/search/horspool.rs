@@ -51,7 +51,11 @@ impl SearchAlgorithm for Bmh {
                     line: String::from_utf8_lossy(&buf[line_start..line_end]).into_owned(),
                 });
 
-                window = if line_end < buf.len() { line_end + 1 } else { buf.len() };
+                window = if line_end < buf.len() {
+                    line_end + 1
+                } else {
+                    buf.len()
+                };
                 scan_pos = window;
                 line_number += 1;
                 line_start = window;
@@ -73,6 +77,12 @@ mod tests {
     fn adjacent_matches_same_line_reports_first_only() {
         let bmh = Bmh;
         let result = bmh.search("aa", b"aaaa\n");
-        assert_eq!(result, vec![Match { line_number: 1, line: "aaaa".to_string() }]);
+        assert_eq!(
+            result,
+            vec![Match {
+                line_number: 1,
+                line: "aaaa".to_string()
+            }]
+        );
     }
 }
