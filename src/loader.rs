@@ -27,7 +27,12 @@ pub fn load(path: &Path) -> std::io::Result<Loaded> {
         return Ok(Loaded::Mapped(mmap));
     }
 
-    let mut buf = Vec::with_capacity(metadata.len() as usize);
+    // `metadata.len()` is a hint, not a promise: a special file can report a
+    // size it will never deliver, and the bare `as usize` cast silently
+    // truncated on 32-bit targets. Anything at or above the threshold took the
+    // mmap branch above, so a legitimate hint can never exceed it.
+    let hint = usize::try_from(metadata.len().min(MMAP_THRESHOLD_BYTES)).unwrap_or(0);
+    let mut buf = Vec::with_capacity(hint);
     let mut file = file;
     file.read_to_end(&mut buf)?;
     Ok(Loaded::Owned(buf))
