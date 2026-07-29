@@ -56,7 +56,11 @@ mod tests {
     use std::io::Write;
 
     fn unique_dir(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("greep-filelist-test-{}-{}", name, std::process::id()))
+        std::env::temp_dir().join(format!(
+            "greep-filelist-test-{}-{}",
+            name,
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -70,7 +74,10 @@ mod tests {
         }
         let result = read_filelist(&path).unwrap();
         fs::remove_file(&path).unwrap();
-        assert_eq!(result, vec!["first.txt".to_string(), "second.txt".to_string()]);
+        assert_eq!(
+            result,
+            vec!["first.txt".to_string(), "second.txt".to_string()]
+        );
     }
 
     #[test]

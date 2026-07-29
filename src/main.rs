@@ -87,7 +87,12 @@ fn main() {
     }
 }
 
-fn run_file(filename: &str, search_word: &str, algorithm_code: &str, timing: bool) -> PerFileResult {
+fn run_file(
+    filename: &str,
+    search_word: &str,
+    algorithm_code: &str,
+    timing: bool,
+) -> PerFileResult {
     let alg = search::find_algorithm(algorithm_code).expect("algorithm validated before spawn");
 
     let loaded = match loader::load(std::path::Path::new(filename)) {

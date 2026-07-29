@@ -59,7 +59,8 @@ fn directory_argument_expands_and_skips_dotfiles() {
 
 #[test]
 fn timing_summary_on_all_failed_files_is_zeroed_not_crashed() {
-    let missing = std::env::temp_dir().join(format!("greep-cli-test-missing-{}", std::process::id()));
+    let missing =
+        std::env::temp_dir().join(format!("greep-cli-test-missing-{}", std::process::id()));
 
     greep()
         .args(["-t", "word", missing.to_str().unwrap()])
