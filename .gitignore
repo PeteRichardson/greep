@@ -1,6 +1,2 @@
-DerivedData/
-xcuserdata/
-testdata/
-launchd.log
-build/
-.DS_Store/
+target/
+.DS_Store
