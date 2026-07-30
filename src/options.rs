@@ -15,7 +15,12 @@ const DIRECTORY_WALK_HELP: &str = concat!(
 );
 
 #[derive(Parser, Debug)]
-#[command(name = "greep", about = "A simple grep", after_help = DIRECTORY_WALK_HELP)]
+#[command(
+    name = "greep",
+    version,
+    about = "A simple grep",
+    after_help = DIRECTORY_WALK_HELP
+)]
 pub struct Args {
     #[arg(short, long)]
     pub verbose: bool,
