@@ -129,27 +129,27 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn unique_dir(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "greep-filelist-test-{}-{}",
-            name,
-            std::process::id()
-        ))
+    /// A temp directory that removes itself when dropped, including while the
+    /// thread is unwinding from a failed assertion. The explicit `remove_*` calls
+    /// this replaces were skipped on failure, leaking fixtures into the temp dir.
+    fn fixture() -> tempfile::TempDir {
+        tempfile::tempdir().expect("create temp dir")
     }
 
     /// Writes `contents` to a manifest file and reads it back through
-    /// `read_filelist`, cleaning up afterwards.
+    /// `read_filelist`. The `TempDir` cleans up on drop, so neither a failed
+    /// write nor a failed assertion in the caller can leak the fixture.
     fn read_manifest(name: &str, contents: &str) -> Vec<PathBuf> {
-        let path = unique_dir(name);
+        let dir = fixture();
+        let path = dir.path().join(name);
         fs::write(&path, contents).unwrap();
-        let result = read_filelist(&path);
-        fs::remove_file(&path).unwrap();
-        result.unwrap()
+        read_filelist(&path).unwrap()
     }
 
     #[test]
     fn read_filelist_skips_blank_lines_and_trims() {
-        let path = unique_dir("list.txt");
+        let dir = fixture();
+        let path = dir.path().join("list.txt");
         {
             let mut f = fs::File::create(&path).unwrap();
             writeln!(f, "first.txt").unwrap();
@@ -157,7 +157,6 @@ mod tests {
             writeln!(f, "second.txt\r").unwrap();
         }
         let result = read_filelist(&path).unwrap();
-        fs::remove_file(&path).unwrap();
         assert_eq!(
             result,
             vec![PathBuf::from("first.txt"), PathBuf::from("second.txt")]
@@ -297,7 +296,8 @@ mod tests {
 
     #[test]
     fn expand_paths_walks_directory_skipping_dotfiles() {
-        let dir = unique_dir("walkdir");
+        let tmp = fixture();
+        let dir = tmp.path();
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::write(dir.join("a.txt"), b"a").unwrap();
         fs::write(dir.join(".hidden"), b"h").unwrap();
@@ -305,13 +305,12 @@ mod tests {
         fs::create_dir_all(dir.join(".hiddendir")).unwrap();
         fs::write(dir.join(".hiddendir").join("c.txt"), b"c").unwrap();
 
-        let mut result = expand_paths(vec![dir.clone()]);
+        let mut result = expand_paths(vec![dir.to_path_buf()]);
         result.sort();
 
         let mut expected = vec![dir.join("a.txt"), dir.join("sub").join("b.txt")];
         expected.sort();
 
-        fs::remove_dir_all(&dir).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -321,19 +320,18 @@ mod tests {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
 
-        let dir = unique_dir("nonutf8");
-        fs::create_dir_all(&dir).unwrap();
+        let tmp = fixture();
+        let dir = tmp.path();
 
         // 0xFF is never valid UTF-8. APFS rejects such a name outright, so on
         // macOS there is nothing to exercise and this returns early; ext4 accepts
         // it, so CI runs the real case.
         let target = dir.join(OsStr::from_bytes(b"caf\xff.txt"));
         if fs::write(&target, b"needle\n").is_err() {
-            fs::remove_dir_all(&dir).ok();
             return;
         }
 
-        let result = expand_paths(vec![dir.clone()]);
+        let result = expand_paths(vec![dir.to_path_buf()]);
         assert_eq!(result.len(), 1);
 
         // The bytes survive the walk, so the path still names the file it came
@@ -352,7 +350,5 @@ mod tests {
             fs::File::open(&lossy).is_err(),
             "the lossy form opened, so this test is not exercising the mangling"
         );
-
-        fs::remove_dir_all(&dir).unwrap();
     }
 }
