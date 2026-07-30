@@ -42,11 +42,10 @@ fn filelist_and_positional_files_conflict() {
 
 #[test]
 fn filelist_duplicates_produce_one_result_not_one_per_line() {
-    let dir = std::env::temp_dir().join(format!("greep-cli-test-fldupe-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    let target = dir.join("a.txt");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a.txt");
     fs::write(&target, "needle here\n").unwrap();
-    let list = dir.join("list.txt");
+    let list = dir.path().join("list.txt");
     // The reported symptom: N identical entries bought N threads, N reads of the
     // same file, and N copies of every matching line.
     let repeated = format!("{}\n", target.display()).repeat(5);
@@ -59,17 +58,14 @@ fn filelist_duplicates_produce_one_result_not_one_per_line() {
         .assert()
         .code(0)
         .stdout(expected);
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
 fn filelist_comments_and_blank_lines_are_ignored() {
-    let dir = std::env::temp_dir().join(format!("greep-cli-test-flcomment-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    let target = dir.join("a.txt");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a.txt");
     fs::write(&target, "needle here\n").unwrap();
-    let list = dir.join("list.txt");
+    let list = dir.path().join("list.txt");
     fs::write(
         &list,
         format!(
@@ -85,8 +81,6 @@ fn filelist_comments_and_blank_lines_are_ignored() {
         .assert()
         .code(0)
         .stdout(format!("{}:1 needle here\n", target.display()));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
