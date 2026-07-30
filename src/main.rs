@@ -4,6 +4,7 @@ mod options;
 mod search;
 
 use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -27,7 +28,7 @@ struct TimingInfo {
 }
 
 struct PerFileResult {
-    filename: String,
+    filename: PathBuf,
     matches: Vec<Match>,
     /// The file contains a NUL in its first block. Its matches are still counted
     /// for exit status, but the matching lines are never written out — they are
@@ -97,7 +98,7 @@ fn run() -> i32 {
         .enumerate()
         .map(|(i, filename)| {
             if verbose {
-                eprintln!("# Processing file {i}: {filename}");
+                eprintln!("# Processing file {i}: {}", filename.display());
             }
             let algorithm_code = algorithm_code.clone();
             let search_word = search_word.clone();
@@ -136,15 +137,19 @@ fn run() -> i32 {
             },
         };
 
+        // Bound once: `Path` has no `Display`, and calling `.display()` at each
+        // use site is what pushed this loop's formatting onto extra lines.
+        let name = result.filename.display();
+
         if result.binary {
             // Report that it matched without emitting the bytes themselves.
             // A file with no match prints nothing at all, as grep does.
             if !result.matches.is_empty() {
-                let _ = writeln!(out, "Binary file {} matches", result.filename);
+                let _ = writeln!(out, "Binary file {name} matches");
             }
         } else {
             for m in &result.matches {
-                let _ = writeln!(out, "{}:{} {}", result.filename, m.line_number, m.line);
+                let _ = writeln!(out, "{name}:{} {}", m.line_number, m.line);
             }
         }
         totals.files += 1;
@@ -157,14 +162,14 @@ fn run() -> i32 {
             // Keep stdout and stderr readable relative to each other; this is
             // once per failing file, not once per match.
             let _ = out.flush();
-            eprintln!("error: {}: {}", result.filename, err);
+            eprintln!("error: {name}: {err}");
             any_error = true;
             totals.errors += 1;
         }
 
         if let Some(info) = result.timing {
             let _ = out.flush();
-            eprintln!("#TIMING {:8} {}", info.elapsed.as_micros(), result.filename);
+            eprintln!("#TIMING {:8} {name}", info.elapsed.as_micros());
             totals.timings.push(info);
         }
         // `result`, and with it this file's match text, is dropped here.
@@ -201,18 +206,18 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 fn run_file(
-    filename: &str,
+    filename: &Path,
     search_word: &str,
     algorithm_code: &str,
     timing: bool,
 ) -> PerFileResult {
     let alg = search::find_algorithm(algorithm_code).expect("algorithm validated before spawn");
 
-    let loaded = match loader::load(std::path::Path::new(filename)) {
+    let loaded = match loader::load(filename) {
         Ok(l) => l,
         Err(e) => {
             return PerFileResult {
-                filename: filename.to_string(),
+                filename: filename.to_path_buf(),
                 matches: Vec::new(),
                 binary: false,
                 timing: None,
@@ -237,7 +242,7 @@ fn run_file(
     };
 
     PerFileResult {
-        filename: filename.to_string(),
+        filename: filename.to_path_buf(),
         matches,
         binary,
         timing,

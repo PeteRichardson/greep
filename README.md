@@ -361,7 +361,7 @@ These are current, verified behaviors rather than hypotheticals. Each links to i
 - **Hidden files are always skipped** ([#25](https://github.com/PeteRichardson/greep/issues/25)). Dotfiles and dot-directories are excluded from directory walks, with no opt-out flag.
 - **Symlinks inside a directory are skipped silently** ([#24](https://github.com/PeteRichardson/greep/issues/24)). This matches `grep -r`'s default. Note the asymmetry: a symlink passed *explicitly* as an argument **is** followed — only the directory walk skips them.
 - **Thread count is unbounded** ([#15](https://github.com/PeteRichardson/greep/issues/15)). One thread is spawned per file with no pool or cap. Fine for thousands of small files; the risk case is many concurrently-large files.
-- **Non-UTF-8 filenames are mangled** ([#39](https://github.com/PeteRichardson/greep/issues/39)). Paths round-trip through lossy UTF-8 conversion, which can produce an unopenable path. Unreachable on macOS (APFS enforces UTF-8); a real bug on Linux.
+- **A `-f` manifest must be valid UTF-8** ([#39](https://github.com/PeteRichardson/greep/issues/39)). Paths given as arguments or found by the directory walk keep their exact bytes, so non-UTF-8 filenames work. A manifest is read line-by-line as text, so a non-UTF-8 path *inside* one fails the whole read with "stream did not contain valid UTF-8". This is a loud error rather than the silent mangling it replaced.
 - **No CI** ([#32](https://github.com/PeteRichardson/greep/issues/32)). The test suite is not run automatically on push.
 
 <!-- 🖊 TODO: Review this list — it was assembled from open issues and verified by
