@@ -131,7 +131,7 @@ Usage: greep [OPTIONS] [STRING] [FILES]...
 | Flag | Description |
 |------|-------------|
 | `-a`, `--algorithm <ALGORITHM>` | Search algorithm code. One algorithm is used for the whole run. [default: `bf`] |
-| `-f`, `--filelist <FILELIST>` | Read the file list from a file, one path per line. Cannot be combined with positional `FILES`. |
+| `-f`, `--filelist <FILELIST>` | Read the file list from a file, one path per line. `#` comments and blank lines are skipped, a leading `~` expands, and repeats are collapsed — see [Search a list of files from a manifest](#search-a-list-of-files-from-a-manifest). Cannot be combined with positional `FILES`. |
 | `-l`, `--list` | Print the available algorithm codes and exit. |
 | `-t`, `--timing` | Print per-file `#TIMING` lines to stderr, then `#COMMAND` and `#TIMING_SUMMARY`. Independent of `-v`. |
 | `-v`, `--verbose` | Print progress to stderr as files are processed. Independent of `-t`. |
@@ -268,8 +268,33 @@ notes.txt:3 needle needle needle
 greep -f files.txt needle
 ```
 
-`files.txt` holds one path per line; blank lines are skipped. This cannot be
-combined with positional file arguments.
+`files.txt` holds one path per line. This cannot be combined with positional file
+arguments.
+
+```
+# Sources worth searching                 <- comments start with #
+src/main.rs
+src/options.rs
+                                          <- blank lines are skipped
+~/notes/scratch.txt                       <- a leading ~ expands to $HOME
+src/main.rs                               <- a repeat is ignored
+```
+
+The rules, and their edges:
+
+- **Blank lines are skipped.**
+- **A line whose first non-blank character is `#` is a comment.** Only whole
+  lines — a trailing `#` is *not* stripped, because `#` is legal in a filename
+  and `notes#2.txt` has to stay openable. To list a file whose name really does
+  begin with `#`, write it as `./#name`.
+- **A leading `~` or `~/` expands to `$HOME`.** Nothing else would expand it: a
+  manifest is read by greep, not by your shell. `~user` is not supported and is
+  left alone, as is a `~` anywhere but the start.
+- **Repeated paths are collapsed to their first occurrence**, so the surviving
+  order is first-seen. Deduplication happens after `~` expansion, so `~/a.txt`
+  and `$HOME/a.txt` count as the same file.
+- **Leading whitespace is not stripped from a path**, since it is legal in a
+  filename. Indent comments freely; don't indent paths.
 
 ---
 
