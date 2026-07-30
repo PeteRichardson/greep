@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -14,26 +15,54 @@ use std::path::{Path, PathBuf};
 /// relative path than an unsupported shorthand. Only a bare `~` or a `~/` prefix
 /// is treated as the shorthand.
 fn expand_tilde(path: &str) -> String {
+    // `var_os`, not `var`: `$HOME` names a path, and a path is not required to be
+    // UTF-8. `var` reports a non-UTF-8 home as absent and would silently stop
+    // expanding for a user who has one.
+    expand_tilde_against(path, std::env::var_os("HOME").as_deref())
+}
+
+/// The body of [`expand_tilde`], with `$HOME` passed in.
+///
+/// Taking the home directory as an argument keeps the separator and
+/// missing-`$HOME` rules testable without mutating the environment, which is
+/// process-global and races the other tests in this module.
+fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> String {
     let rest = if path == "~" {
         ""
     } else if let Some(rest) = path.strip_prefix("~/") {
-        rest
+        // `Path::push` treats a leading separator as "this is absolute" and
+        // discards what came before it, so `~//notes.txt` would resolve to
+        // `/notes.txt` and drop `$HOME` entirely.
+        rest.trim_start_matches('/')
     } else {
         return path.to_string();
     };
 
-    let Ok(home) = std::env::var("HOME") else {
+    let Some(home) = home else {
         // No `$HOME` to expand against. Passing the path through unchanged fails
         // later with a "no such file" naming the path the user actually wrote,
         // which beats failing here with something they did not.
         return path.to_string();
     };
 
-    if rest.is_empty() {
-        home
-    } else {
-        format!("{}/{rest}", home.trim_end_matches('/'))
+    // `Path::push` owns the separator rules, so a `$HOME` written with or without
+    // a trailing slash produces the same result and there is no concatenation
+    // here to get them wrong.
+    let mut expanded = PathBuf::from(home);
+    if !rest.is_empty() {
+        // Pushing an empty component would append a separator, turning a bare
+        // `~` into `$HOME/`.
+        expanded.push(rest);
     }
+
+    // This function still yields `String` because `read_filelist` does. A
+    // non-UTF-8 result therefore has to fall back to the unexpanded path rather
+    // than be mangled by a lossy conversion — issue #39 tracks carrying
+    // `PathBuf` end to end, which retires both this branch and the return type.
+    expanded
+        .into_os_string()
+        .into_string()
+        .unwrap_or_else(|_| path.to_string())
 }
 
 /// Reads a manifest of paths, one per line.
@@ -208,6 +237,50 @@ mod tests {
         let home = std::env::var("HOME").expect("HOME is set");
         let result = read_manifest("tilde3.txt", &format!("~/notes.txt\n{home}/notes.txt\n"));
         assert_eq!(result, vec![format!("{home}/notes.txt")]);
+    }
+
+    /// `$HOME` written with a trailing separator must expand identically to one
+    /// written without. The concatenation this replaced needed a
+    /// `trim_end_matches` to get here; `Path::push` does it as a matter of course.
+    #[test]
+    fn expand_tilde_is_indifferent_to_a_trailing_slash_on_home() {
+        let plain = expand_tilde_against("~/notes.txt", Some(OsStr::new("/home/pete")));
+        let trailing = expand_tilde_against("~/notes.txt", Some(OsStr::new("/home/pete/")));
+        assert_eq!(plain, "/home/pete/notes.txt");
+        assert_eq!(trailing, plain);
+    }
+
+    #[test]
+    fn expand_tilde_keeps_home_when_the_remainder_starts_with_a_separator() {
+        // `Path::push` would treat `/notes.txt` as absolute and throw `$HOME`
+        // away, which is the one way this can silently name the wrong file.
+        let result = expand_tilde_against("~//notes.txt", Some(OsStr::new("/home/pete")));
+        assert_eq!(result, "/home/pete/notes.txt");
+    }
+
+    #[test]
+    fn expand_tilde_of_a_bare_tilde_has_no_trailing_separator() {
+        let result = expand_tilde_against("~", Some(OsStr::new("/home/pete")));
+        assert_eq!(result, "/home/pete");
+    }
+
+    #[test]
+    fn expand_tilde_passes_the_path_through_when_home_is_unset() {
+        // The fallback the environment cannot be made to exercise directly: an
+        // unexpanded `~/notes.txt` fails later naming what the user actually
+        // wrote, rather than failing here naming something they did not.
+        assert_eq!(expand_tilde_against("~/notes.txt", None), "~/notes.txt");
+        assert_eq!(expand_tilde_against("~", None), "~");
+    }
+
+    #[test]
+    fn expand_tilde_leaves_non_tilde_paths_untouched_regardless_of_home() {
+        for path in ["notes.txt", "~someone/notes.txt", "back~up.txt", "./~odd"] {
+            assert_eq!(
+                expand_tilde_against(path, Some(OsStr::new("/home/pete"))),
+                path
+            );
+        }
     }
 
     #[test]
