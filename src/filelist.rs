@@ -1,16 +1,70 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+/// Expands a leading `~` to the value of `$HOME`.
+///
+/// A manifest is read by greep rather than by a shell, so nothing else in the
+/// pipeline will ever expand it — a `~/notes.txt` line would otherwise become a
+/// request to open a directory literally named `~`.
+///
+/// `~user` is deliberately not supported: resolving another user's home means a
+/// passwd lookup, and a path beginning `~someone` is far more likely to be a real
+/// relative path than an unsupported shorthand. Only a bare `~` or a `~/` prefix
+/// is treated as the shorthand.
+fn expand_tilde(path: &str) -> String {
+    let rest = if path == "~" {
+        ""
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        rest
+    } else {
+        return path.to_string();
+    };
+
+    let Ok(home) = std::env::var("HOME") else {
+        // No `$HOME` to expand against. Passing the path through unchanged fails
+        // later with a "no such file" naming the path the user actually wrote,
+        // which beats failing here with something they did not.
+        return path.to_string();
+    };
+
+    if rest.is_empty() {
+        home
+    } else {
+        format!("{}/{rest}", home.trim_end_matches('/'))
+    }
+}
+
+/// Reads a manifest of paths, one per line.
+///
+/// Blank lines are skipped, `#` comments are ignored, `~` is expanded, and
+/// repeated paths are collapsed to their first occurrence — a duplicated line
+/// otherwise buys a second thread, a second read of the same file, and a second
+/// copy of every matching line in the output.
 pub fn read_filelist(path: &Path) -> std::io::Result<Vec<String>> {
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
     let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim_end_matches(['\r', '\n']);
-        if !trimmed.is_empty() {
-            out.push(trimmed.to_string());
+
+        // A comment is a line whose first non-blank character is `#`. Only the
+        // whole line — a trailing `# ...` is not stripped, because `#` is a legal
+        // character in a filename and `notes#2.txt` must stay openable. A file
+        // whose name genuinely starts with `#` can still be listed as `./#name`.
+        if trimmed.is_empty() || trimmed.trim_start().starts_with('#') {
+            continue;
+        }
+
+        // Leading whitespace is *not* stripped from a path: it is legal in a
+        // filename, and this function has no way to tell alignment from content.
+        let expanded = expand_tilde(trimmed);
+        if seen.insert(expanded.clone()) {
+            out.push(expanded);
         }
     }
     Ok(out)
@@ -60,6 +114,16 @@ mod tests {
         ))
     }
 
+    /// Writes `contents` to a manifest file and reads it back through
+    /// `read_filelist`, cleaning up afterwards.
+    fn read_manifest(name: &str, contents: &str) -> Vec<String> {
+        let path = unique_dir(name);
+        fs::write(&path, contents).unwrap();
+        let result = read_filelist(&path);
+        fs::remove_file(&path).unwrap();
+        result.unwrap()
+    }
+
     #[test]
     fn read_filelist_skips_blank_lines_and_trims() {
         let path = unique_dir("list.txt");
@@ -75,6 +139,75 @@ mod tests {
             result,
             vec!["first.txt".to_string(), "second.txt".to_string()]
         );
+    }
+
+    #[test]
+    fn read_filelist_dedupes_preserving_first_occurrence_order() {
+        // Order is first-seen, not sorted and not last-seen: "b" stays ahead of
+        // "c" because its first mention was.
+        let result = read_manifest("dupes.txt", "b.txt\nc.txt\nb.txt\na.txt\nc.txt\nb.txt\n");
+        assert_eq!(
+            result,
+            vec![
+                "b.txt".to_string(),
+                "c.txt".to_string(),
+                "a.txt".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn read_filelist_skips_comment_lines() {
+        let result = read_manifest(
+            "comments.txt",
+            "# a leading comment\nfirst.txt\n   # an indented one\nsecond.txt\n",
+        );
+        assert_eq!(
+            result,
+            vec!["first.txt".to_string(), "second.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn read_filelist_does_not_strip_trailing_comments_from_paths() {
+        // `#` is legal in a filename. Stripping from the first `#` onwards would
+        // silently rewrite these two paths into files that do not exist.
+        let result = read_manifest("hashes.txt", "notes#2.txt\n./#literal.txt\n");
+        assert_eq!(
+            result,
+            vec!["notes#2.txt".to_string(), "./#literal.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn read_filelist_expands_a_leading_tilde() {
+        let home = std::env::var("HOME").expect("HOME is set");
+        let result = read_manifest("tilde.txt", "~/notes.txt\n~\n");
+        assert_eq!(result, vec![format!("{home}/notes.txt"), home]);
+    }
+
+    #[test]
+    fn read_filelist_leaves_other_tildes_alone() {
+        // `~user` needs a passwd lookup and is not supported; an interior `~` is
+        // an ordinary character. Neither may be rewritten.
+        let result = read_manifest("tilde2.txt", "~someone/notes.txt\nback~up.txt\n./~odd\n");
+        assert_eq!(
+            result,
+            vec![
+                "~someone/notes.txt".to_string(),
+                "back~up.txt".to_string(),
+                "./~odd".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn read_filelist_dedupes_after_tilde_expansion() {
+        // `~/x` and `$HOME/x` are the same file, so they must collapse. Deduping
+        // before expansion would leave both.
+        let home = std::env::var("HOME").expect("HOME is set");
+        let result = read_manifest("tilde3.txt", &format!("~/notes.txt\n{home}/notes.txt\n"));
+        assert_eq!(result, vec![format!("{home}/notes.txt")]);
     }
 
     #[test]

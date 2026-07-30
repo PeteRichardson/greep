@@ -41,6 +41,55 @@ fn filelist_and_positional_files_conflict() {
 }
 
 #[test]
+fn filelist_duplicates_produce_one_result_not_one_per_line() {
+    let dir = std::env::temp_dir().join(format!("greep-cli-test-fldupe-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("a.txt");
+    fs::write(&target, "needle here\n").unwrap();
+    let list = dir.join("list.txt");
+    // The reported symptom: N identical entries bought N threads, N reads of the
+    // same file, and N copies of every matching line.
+    let repeated = format!("{}\n", target.display()).repeat(5);
+    fs::write(&list, &repeated).unwrap();
+
+    let expected = format!("{}:1 needle here\n", target.display());
+
+    greep()
+        .args(["-f", list.to_str().unwrap(), "needle"])
+        .assert()
+        .code(0)
+        .stdout(expected);
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn filelist_comments_and_blank_lines_are_ignored() {
+    let dir = std::env::temp_dir().join(format!("greep-cli-test-flcomment-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("a.txt");
+    fs::write(&target, "needle here\n").unwrap();
+    let list = dir.join("list.txt");
+    fs::write(
+        &list,
+        format!(
+            "# this manifest is annotated\n\n{}\n   # and indented comments work too\n",
+            target.display()
+        ),
+    )
+    .unwrap();
+
+    // A comment naming a nonexistent path would exit 2 if it were treated as one.
+    greep()
+        .args(["-f", list.to_str().unwrap(), "needle"])
+        .assert()
+        .code(0)
+        .stdout(format!("{}:1 needle here\n", target.display()));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn directory_argument_expands_and_skips_dotfiles() {
     let dir = std::env::temp_dir().join(format!("greep-cli-test-dir-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
