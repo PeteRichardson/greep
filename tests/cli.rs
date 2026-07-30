@@ -67,7 +67,110 @@ fn timing_summary_on_all_failed_files_is_zeroed_not_crashed() {
         .assert()
         .code(2)
         .stderr(predicates::str::contains("errors=1"))
-        .stderr(predicates::str::contains("min=0"));
+        .stderr(predicates::str::contains("min=0"))
+        // The throughput fields take the same early return and must be zeroed
+        // rather than dividing by a zero elapsed time.
+        .stderr(predicates::str::contains("algo_mbps=0.0 wall_mbps=0.0"))
+        .stderr(predicates::str::contains("matched=0 matches=0"));
+}
+
+#[test]
+fn timing_summary_counts_matched_files_and_matching_lines() {
+    let dir = std::env::temp_dir().join(format!("greep-cli-test-counts-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    // Two of three files match; three matching lines in total. Distinct numbers,
+    // so a summary reporting one where it means the other cannot pass.
+    fs::write(dir.join("a.txt"), "needle one\nplain\nneedle two\n").unwrap();
+    fs::write(dir.join("b.txt"), "nothing here\n").unwrap();
+    fs::write(dir.join("c.txt"), "needle three\n").unwrap();
+
+    greep()
+        .args([
+            "-t",
+            "needle",
+            dir.join("a.txt").to_str().unwrap(),
+            dir.join("b.txt").to_str().unwrap(),
+            dir.join("c.txt").to_str().unwrap(),
+        ])
+        .assert()
+        .code(0)
+        .stderr(predicates::str::contains(
+            "files=3 errors=0 matched=2 matches=3",
+        ));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn matches_on_a_binary_file_are_counted_even_though_lines_are_not_printed() {
+    let dir = std::env::temp_dir().join(format!("greep-cli-test-bincount-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("blob.bin");
+    let mut data = vec![0x7f, b'E', b'L', b'F', 0x00];
+    data.extend_from_slice(b"needle\n");
+    fs::write(&file, &data).unwrap();
+
+    // The line itself is suppressed because it is arbitrary bytes, but it did
+    // match, and the summary counts what was found rather than what was shown.
+    greep()
+        .args(["-t", "needle", file.to_str().unwrap()])
+        .assert()
+        .code(0)
+        .stdout(predicates::str::contains("Binary file"))
+        .stderr(predicates::str::contains("matched=1 matches=1"));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn timing_summary_reports_both_throughput_figures() {
+    let dir = std::env::temp_dir().join(format!("greep-cli-test-mbps-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("big.txt");
+    // Large enough that the search takes a measurable number of microseconds;
+    // on a small file both rates legitimately round to 0.0 and assert nothing.
+    let mut body = "the quick brown fox jumps over the lazy dog\n".repeat(50_000);
+    body.push_str("needle at the end\n");
+    fs::write(&file, &body).unwrap();
+
+    let output = greep()
+        .args(["-t", "needle", file.to_str().unwrap()])
+        .assert()
+        .code(0)
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(output).unwrap();
+
+    let summary = stderr
+        .lines()
+        .find(|l| l.starts_with("#TIMING_SUMMARY"))
+        .expect("a #TIMING_SUMMARY line");
+
+    let field = |key: &str| -> f64 {
+        summary
+            .split_whitespace()
+            .find_map(|kv| kv.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("no {key} in {summary}"))
+            .parse()
+            .unwrap_or_else(|_| panic!("{key} is not a number in {summary}"))
+    };
+
+    // Both rates are real measurements, so assert the properties that must hold
+    // rather than a magnitude that would be flaky on a loaded machine.
+    assert!(field("algo_mbps") > 0.0, "algo_mbps was 0 in {summary}");
+    assert!(field("wall_mbps") > 0.0, "wall_mbps was 0 in {summary}");
+    assert!(field("wall_us") > 0.0, "wall_us was 0 in {summary}");
+
+    // Wall clock covers loading and writing as well as searching, and this is a
+    // single file so there is no parallelism to offset that. The search-only
+    // rate is therefore the higher of the two.
+    assert!(
+        field("algo_mbps") > field("wall_mbps"),
+        "expected search-only throughput to exceed wall-clock throughput in {summary}"
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
