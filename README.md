@@ -42,7 +42,7 @@ It is deliberately not a grep replacement. There are no regular expressions, no 
 ## Features
 
 - **Swappable search algorithms** — `-a bf` (brute force) or `-a bmh` (Boyer-Moore-Horspool). Both are held to the same observable behavior by a cross-algorithm parity test, so `-a` is a performance choice, not a semantics choice.
-- **Built-in timing instrumentation** — `-t` emits a per-file `#TIMING` line plus `#COMMAND` and `#TIMING_SUMMARY` lines with min/avg/max microseconds and total bytes. Machine-readable, and on stderr so it never pollutes match output.
+- **Built-in timing instrumentation** — `-t` emits a per-file `#TIMING` line plus `#COMMAND` and `#TIMING_SUMMARY` lines with min/avg/max microseconds, bytes searched, match counts, and two throughput figures — search-only and wall-clock. Machine-readable, and on stderr so it never pollutes match output.
 - **One thread per file** — files are searched in parallel, but output is emitted in argument order, so results are deterministic regardless of which thread finishes first.
 - **Size-aware file loading** — files under 1 GiB are read into memory; files at or above 1 GiB are memory-mapped.
 - **Recursive directory search** — pass a directory and it is walked automatically. No `-r` flag needed.
@@ -214,7 +214,36 @@ notes.txt:1 A needle in a haystack
 notes.txt:3 needle needle needle
 #TIMING        0 notes.txt
 #COMMAND greep -t -a bmh needle notes.txt
-#TIMING_SUMMARY algorithm=bmh files=1 errors=0 bytes=66 min=0 avg=0 max=0
+#TIMING_SUMMARY algorithm=bmh files=1 errors=0 matched=1 matches=2 bytes=66 min=0 avg=0 max=0 algo_mbps=0.0 wall_mbps=0.6 wall_us=107
+```
+
+The timing figures vary from run to run; everything else above is reproducible.
+
+The `#TIMING_SUMMARY` fields:
+
+| Field | Meaning |
+|---|---|
+| `algorithm` | The algorithm code that ran. |
+| `files` | Files **searched**, including ones that failed to open. |
+| `errors` | Files that failed. |
+| `matched` | Files with at least one match. |
+| `matches` | Matching lines across every file. Binary files count here even though their lines are never printed. |
+| `bytes` | Bytes searched, summed over files that succeeded. |
+| `min` / `avg` / `max` | Per-file search time in microseconds. |
+| `algo_mbps` | `bytes` ÷ summed per-file search time. Excludes I/O and excludes parallelism, so it is the figure that compares algorithms. |
+| `wall_mbps` | `bytes` ÷ elapsed run time. What you actually waited for, including loading and every thread at once. |
+| `wall_us` | Elapsed run time in microseconds, measured from after argument parsing. |
+
+Both throughput figures use MB = 10⁶ bytes, and both are `0.0` when the run was
+too short to measure. **The two differ by roughly the parallelism factor** —
+`algo_mbps` is the one to quote when comparing `bf` against `bmh`, and
+`wall_mbps` is the one that answers "how fast was my search".
+
+On a real workload the difference between the algorithms is visible directly:
+
+```
+#TIMING_SUMMARY algorithm=bf  files=8 errors=0 matched=8 matches=122 bytes=43414 min=11 avg=27 max=64 algo_mbps=199.1 wall_mbps=188.8 wall_us=230
+#TIMING_SUMMARY algorithm=bmh files=8 errors=0 matched=8 matches=122 bytes=43414 min=8  avg=20 max=47 algo_mbps=264.7 wall_mbps=229.7 wall_us=189
 ```
 
 Matches go to stdout; every `#`-prefixed line goes to stderr. Redirect one away
