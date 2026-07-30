@@ -238,3 +238,22 @@ fn missing_search_word_reports_clap_usage_not_a_hand_rolled_one() {
         // ...and not the hand-rolled string that duplicated it.
         .stderr(predicates::str::contains("usage: greep [-v]").not());
 }
+
+#[test]
+fn version_flag_prints_the_package_version() {
+    greep()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn short_version_flag_does_not_collide_with_verbose() {
+    // -v is verbose; clap's generated short for --version is -V. Both must work.
+    greep()
+        .arg("-V")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
+}

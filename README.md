@@ -80,17 +80,12 @@ cargo build --release
 ### Verify
 
 ```sh
-./target/release/greep -l
+./target/release/greep --version
 ```
 
 ```
-bf     brute force
-bmh    boyer-moore-horspool
+greep 0.1.0
 ```
-
-<!-- 🖊 TODO: `--version` would be the conventional way to verify an install, but
-     that flag doesn't exist yet (tracked in issue #18). `-l` is used above
-     because it is real. Swap this once #18 lands. -->
 
 ---
 
@@ -140,6 +135,7 @@ Usage: greep [OPTIONS] [STRING] [FILES]...
 | `-l`, `--list` | Print the available algorithm codes and exit. |
 | `-t`, `--timing` | Print per-file `#TIMING` lines to stderr, then `#COMMAND` and `#TIMING_SUMMARY`. Independent of `-v`. |
 | `-v`, `--verbose` | Print progress to stderr as files are processed. Independent of `-t`. |
+| `-V`, `--version` | Print the version and exit. |
 | `-h`, `--help` | Print help. |
 
 ### Algorithms
@@ -310,7 +306,6 @@ These are current, verified behaviors rather than hypotheticals. Each links to i
 - **A search string containing a newline never matches.** Search is line-scoped and no line contains a newline, so both algorithms agree on this and exit `1`.
 - **Hidden files are always skipped** ([#25](https://github.com/PeteRichardson/greep/issues/25)). Dotfiles and dot-directories are excluded from directory walks, with no opt-out flag.
 - **Symlinks inside a directory are skipped silently** ([#24](https://github.com/PeteRichardson/greep/issues/24)). This matches `grep -r`'s default. Note the asymmetry: a symlink passed *explicitly* as an argument **is** followed — only the directory walk skips them.
-- **No `--version` flag** ([#18](https://github.com/PeteRichardson/greep/issues/18)). Use `-l` to confirm a working binary.
 - **Thread count is unbounded** ([#15](https://github.com/PeteRichardson/greep/issues/15)). One thread is spawned per file with no pool or cap. Fine for thousands of small files; the risk case is many concurrently-large files.
 - **Non-UTF-8 filenames are mangled** ([#39](https://github.com/PeteRichardson/greep/issues/39)). Paths round-trip through lossy UTF-8 conversion, which can produce an unopenable path. Unreachable on macOS (APFS enforces UTF-8); a real bug on Linux.
 - **No CI** ([#32](https://github.com/PeteRichardson/greep/issues/32)). The test suite is not run automatically on push.
