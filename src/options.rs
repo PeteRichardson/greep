@@ -41,7 +41,7 @@ pub struct Args {
     pub search_word: Option<String>,
 
     #[arg(value_name = "FILES")]
-    pub files: Vec<String>,
+    pub files: Vec<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -62,7 +62,7 @@ pub struct ResolvedArgs {
     pub timing: bool,
     pub algorithm_code: String,
     pub search_word: String,
-    pub files: Vec<String>,
+    pub files: Vec<PathBuf>,
 }
 
 pub fn print_algorithm_list() {
@@ -96,7 +96,7 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
     } else if !args.files.is_empty() {
         args.files
     } else {
-        vec!["/dev/stdin".to_string()]
+        vec![PathBuf::from("/dev/stdin")]
     };
 
     Ok(ResolvedArgs {
@@ -144,7 +144,7 @@ mod tests {
     fn filelist_and_positional_files_conflict() {
         let mut args = base_args();
         args.filelist = Some(PathBuf::from("/tmp/somelist"));
-        args.files = vec!["a.txt".to_string()];
+        args.files = vec![PathBuf::from("a.txt")];
         let err = resolve(args).unwrap_err();
         assert!(matches!(err, AppError::ConflictingFileArgs));
     }
@@ -153,17 +153,17 @@ mod tests {
     fn defaults_to_stdin_when_no_files_given() {
         let args = base_args();
         let resolved = resolve(args).unwrap();
-        assert_eq!(resolved.files, vec!["/dev/stdin".to_string()]);
+        assert_eq!(resolved.files, vec![PathBuf::from("/dev/stdin")]);
     }
 
     #[test]
     fn uses_positional_files_when_given() {
         let mut args = base_args();
-        args.files = vec!["a.txt".to_string(), "b.txt".to_string()];
+        args.files = vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")];
         let resolved = resolve(args).unwrap();
         assert_eq!(
             resolved.files,
-            vec!["a.txt".to_string(), "b.txt".to_string()]
+            vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]
         );
     }
 }

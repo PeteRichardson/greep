@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// passwd lookup, and a path beginning `~someone` is far more likely to be a real
 /// relative path than an unsupported shorthand. Only a bare `~` or a `~/` prefix
 /// is treated as the shorthand.
-fn expand_tilde(path: &str) -> String {
+fn expand_tilde(path: &str) -> PathBuf {
     // `var_os`, not `var`: `$HOME` names a path, and a path is not required to be
     // UTF-8. `var` reports a non-UTF-8 home as absent and would silently stop
     // expanding for a user who has one.
@@ -26,7 +26,7 @@ fn expand_tilde(path: &str) -> String {
 /// Taking the home directory as an argument keeps the separator and
 /// missing-`$HOME` rules testable without mutating the environment, which is
 /// process-global and races the other tests in this module.
-fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> String {
+fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> PathBuf {
     let rest = if path == "~" {
         ""
     } else if let Some(rest) = path.strip_prefix("~/") {
@@ -35,14 +35,14 @@ fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> String {
         // `/notes.txt` and drop `$HOME` entirely.
         rest.trim_start_matches('/')
     } else {
-        return path.to_string();
+        return PathBuf::from(path);
     };
 
     let Some(home) = home else {
         // No `$HOME` to expand against. Passing the path through unchanged fails
         // later with a "no such file" naming the path the user actually wrote,
         // which beats failing here with something they did not.
-        return path.to_string();
+        return PathBuf::from(path);
     };
 
     // `Path::push` owns the separator rules, so a `$HOME` written with or without
@@ -54,15 +54,7 @@ fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> String {
         // `~` into `$HOME/`.
         expanded.push(rest);
     }
-
-    // This function still yields `String` because `read_filelist` does. A
-    // non-UTF-8 result therefore has to fall back to the unexpanded path rather
-    // than be mangled by a lossy conversion — issue #39 tracks carrying
-    // `PathBuf` end to end, which retires both this branch and the return type.
     expanded
-        .into_os_string()
-        .into_string()
-        .unwrap_or_else(|_| path.to_string())
 }
 
 /// Reads a manifest of paths, one per line.
@@ -71,7 +63,7 @@ fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> String {
 /// repeated paths are collapsed to their first occurrence — a duplicated line
 /// otherwise buys a second thread, a second read of the same file, and a second
 /// copy of every matching line in the output.
-pub fn read_filelist(path: &Path) -> std::io::Result<Vec<String>> {
+pub fn read_filelist(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
     let mut out = Vec::new();
@@ -99,32 +91,34 @@ pub fn read_filelist(path: &Path) -> std::io::Result<Vec<String>> {
     Ok(out)
 }
 
-pub fn expand_paths(paths: Vec<String>) -> Vec<String> {
+pub fn expand_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for path in paths {
         match fs::metadata(&path) {
-            Ok(meta) if meta.is_dir() => walk_directory(Path::new(&path), &mut out),
+            Ok(meta) if meta.is_dir() => walk_directory(&path, &mut out),
             _ => out.push(path),
         }
     }
     out
 }
 
-fn walk_directory(dir: &Path, out: &mut Vec<String>) {
+fn walk_directory(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         eprintln!("error: unable to open directory '{}'", dir.display());
         return;
     };
 
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with('.') {
+        // Tested on the raw bytes rather than through `to_string_lossy`, so a
+        // name that is not valid UTF-8 is classified on what it actually starts
+        // with instead of on a decoded copy of itself.
+        if entry.file_name().as_encoded_bytes().starts_with(b".") {
             continue;
         }
         let child: PathBuf = entry.path();
         match entry.file_type() {
             Ok(ft) if ft.is_dir() => walk_directory(&child, out),
-            Ok(ft) if ft.is_file() => out.push(child.to_string_lossy().into_owned()),
+            Ok(ft) if ft.is_file() => out.push(child),
             _ => {}
         }
     }
@@ -145,7 +139,7 @@ mod tests {
 
     /// Writes `contents` to a manifest file and reads it back through
     /// `read_filelist`, cleaning up afterwards.
-    fn read_manifest(name: &str, contents: &str) -> Vec<String> {
+    fn read_manifest(name: &str, contents: &str) -> Vec<PathBuf> {
         let path = unique_dir(name);
         fs::write(&path, contents).unwrap();
         let result = read_filelist(&path);
@@ -166,7 +160,7 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert_eq!(
             result,
-            vec!["first.txt".to_string(), "second.txt".to_string()]
+            vec![PathBuf::from("first.txt"), PathBuf::from("second.txt")]
         );
     }
 
@@ -178,9 +172,9 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                "b.txt".to_string(),
-                "c.txt".to_string(),
-                "a.txt".to_string()
+                PathBuf::from("b.txt"),
+                PathBuf::from("c.txt"),
+                PathBuf::from("a.txt")
             ]
         );
     }
@@ -193,7 +187,7 @@ mod tests {
         );
         assert_eq!(
             result,
-            vec!["first.txt".to_string(), "second.txt".to_string()]
+            vec![PathBuf::from("first.txt"), PathBuf::from("second.txt")]
         );
     }
 
@@ -204,7 +198,10 @@ mod tests {
         let result = read_manifest("hashes.txt", "notes#2.txt\n./#literal.txt\n");
         assert_eq!(
             result,
-            vec!["notes#2.txt".to_string(), "./#literal.txt".to_string()]
+            vec![
+                PathBuf::from("notes#2.txt"),
+                PathBuf::from("./#literal.txt")
+            ]
         );
     }
 
@@ -212,7 +209,13 @@ mod tests {
     fn read_filelist_expands_a_leading_tilde() {
         let home = std::env::var("HOME").expect("HOME is set");
         let result = read_manifest("tilde.txt", "~/notes.txt\n~\n");
-        assert_eq!(result, vec![format!("{home}/notes.txt"), home]);
+        assert_eq!(
+            result,
+            vec![
+                PathBuf::from(format!("{home}/notes.txt")),
+                PathBuf::from(home)
+            ]
+        );
     }
 
     #[test]
@@ -223,9 +226,9 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                "~someone/notes.txt".to_string(),
-                "back~up.txt".to_string(),
-                "./~odd".to_string()
+                PathBuf::from("~someone/notes.txt"),
+                PathBuf::from("back~up.txt"),
+                PathBuf::from("./~odd")
             ]
         );
     }
@@ -236,7 +239,7 @@ mod tests {
         // before expansion would leave both.
         let home = std::env::var("HOME").expect("HOME is set");
         let result = read_manifest("tilde3.txt", &format!("~/notes.txt\n{home}/notes.txt\n"));
-        assert_eq!(result, vec![format!("{home}/notes.txt")]);
+        assert_eq!(result, vec![PathBuf::from(format!("{home}/notes.txt"))]);
     }
 
     /// `$HOME` written with a trailing separator must expand identically to one
@@ -246,7 +249,7 @@ mod tests {
     fn expand_tilde_is_indifferent_to_a_trailing_slash_on_home() {
         let plain = expand_tilde_against("~/notes.txt", Some(OsStr::new("/home/pete")));
         let trailing = expand_tilde_against("~/notes.txt", Some(OsStr::new("/home/pete/")));
-        assert_eq!(plain, "/home/pete/notes.txt");
+        assert_eq!(plain, PathBuf::from("/home/pete/notes.txt"));
         assert_eq!(trailing, plain);
     }
 
@@ -255,13 +258,13 @@ mod tests {
         // `Path::push` would treat `/notes.txt` as absolute and throw `$HOME`
         // away, which is the one way this can silently name the wrong file.
         let result = expand_tilde_against("~//notes.txt", Some(OsStr::new("/home/pete")));
-        assert_eq!(result, "/home/pete/notes.txt");
+        assert_eq!(result, PathBuf::from("/home/pete/notes.txt"));
     }
 
     #[test]
     fn expand_tilde_of_a_bare_tilde_has_no_trailing_separator() {
         let result = expand_tilde_against("~", Some(OsStr::new("/home/pete")));
-        assert_eq!(result, "/home/pete");
+        assert_eq!(result, PathBuf::from("/home/pete"));
     }
 
     #[test]
@@ -269,8 +272,11 @@ mod tests {
         // The fallback the environment cannot be made to exercise directly: an
         // unexpanded `~/notes.txt` fails later naming what the user actually
         // wrote, rather than failing here naming something they did not.
-        assert_eq!(expand_tilde_against("~/notes.txt", None), "~/notes.txt");
-        assert_eq!(expand_tilde_against("~", None), "~");
+        assert_eq!(
+            expand_tilde_against("~/notes.txt", None),
+            PathBuf::from("~/notes.txt")
+        );
+        assert_eq!(expand_tilde_against("~", None), PathBuf::from("~"));
     }
 
     #[test]
@@ -278,15 +284,15 @@ mod tests {
         for path in ["notes.txt", "~someone/notes.txt", "back~up.txt", "./~odd"] {
             assert_eq!(
                 expand_tilde_against(path, Some(OsStr::new("/home/pete"))),
-                path
+                PathBuf::from(path)
             );
         }
     }
 
     #[test]
     fn expand_paths_passes_through_regular_files_and_unstatable_paths() {
-        let result = expand_paths(vec!["/dev/stdin".to_string()]);
-        assert_eq!(result, vec!["/dev/stdin".to_string()]);
+        let result = expand_paths(vec![PathBuf::from("/dev/stdin")]);
+        assert_eq!(result, vec![PathBuf::from("/dev/stdin")]);
     }
 
     #[test]
@@ -299,16 +305,54 @@ mod tests {
         fs::create_dir_all(dir.join(".hiddendir")).unwrap();
         fs::write(dir.join(".hiddendir").join("c.txt"), b"c").unwrap();
 
-        let mut result = expand_paths(vec![dir.to_string_lossy().into_owned()]);
+        let mut result = expand_paths(vec![dir.clone()]);
         result.sort();
 
-        let mut expected = vec![
-            dir.join("a.txt").to_string_lossy().into_owned(),
-            dir.join("sub").join("b.txt").to_string_lossy().into_owned(),
-        ];
+        let mut expected = vec![dir.join("a.txt"), dir.join("sub").join("b.txt")];
         expected.sort();
 
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(result, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_preserves_non_utf8_names_so_they_stay_openable() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = unique_dir("nonutf8");
+        fs::create_dir_all(&dir).unwrap();
+
+        // 0xFF is never valid UTF-8. APFS rejects such a name outright, so on
+        // macOS there is nothing to exercise and this returns early; ext4 accepts
+        // it, so CI runs the real case.
+        let target = dir.join(OsStr::from_bytes(b"caf\xff.txt"));
+        if fs::write(&target, b"needle\n").is_err() {
+            fs::remove_dir_all(&dir).ok();
+            return;
+        }
+
+        let result = expand_paths(vec![dir.clone()]);
+        assert_eq!(result.len(), 1);
+
+        // The bytes survive the walk, so the path still names the file it came
+        // from and still opens.
+        assert_eq!(
+            result[0].as_os_str().as_bytes(),
+            target.as_os_str().as_bytes()
+        );
+        assert!(fs::File::open(&result[0]).is_ok());
+
+        // And this is the bug being fixed, demonstrated rather than described:
+        // routing the same path through a lossy String turns 0xFF into U+FFFD and
+        // produces something that no longer opens.
+        let lossy = PathBuf::from(result[0].to_string_lossy().into_owned());
+        assert!(
+            fs::File::open(&lossy).is_err(),
+            "the lossy form opened, so this test is not exercising the mangling"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
