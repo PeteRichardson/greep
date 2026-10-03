@@ -1,6 +1,9 @@
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use tempfile::TempDir;
 
 fn greep() -> Command {
@@ -170,6 +173,146 @@ fn matches_on_a_binary_file_are_counted_even_though_lines_are_not_printed() {
         .code(0)
         .stdout(predicates::str::contains("Binary file"))
         .stderr(predicates::str::contains("matched=1 matches=1"));
+}
+
+// ---------------------------------------------------------------------------
+// -t and non-UTF-8 filenames (#57)
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn timing_does_not_panic_on_non_utf8_filename() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = fixture();
+    // 0xFF is never valid UTF-8, so this argument cannot be decoded. The search
+    // path handles it (paths are PathBuf end to end); this pins that the -t
+    // echo does not panic on it. APFS rejects such a name, so on macOS the file
+    // is simply missing and the test still exercises the argv path.
+    let name = OsStr::from_bytes(b"caf\xff.txt").to_os_string();
+    let path = dir.path().join(&name);
+    let _ = fs::write(&path, b"needle\n");
+
+    let out = greep().args(["-t", "needle"]).arg(&path).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // Exit 2 where the file is missing (APFS), exit 0 where the name is legal
+    // and the file matches (ext4). Either is fine; what matters is that it is
+    // not 101 — before the fix, env::args() panicked here.
+    assert!(
+        out.status.code() == Some(2) || out.status.code() == Some(0),
+        "greep panicked or exited unexpectedly: code {:?}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(!stderr.contains("panicked"), "greep panicked:\n{stderr}");
+    // The timing echo still ran and lost the bytes the same way display does.
+    assert!(stderr.contains("#COMMAND"), "no #COMMAND line:\n{stderr}");
+    assert!(
+        stderr.contains("caf\u{fffd}.txt"),
+        "lossy name missing:\n{stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Unreadable directories and the exit status (#58)
+// ---------------------------------------------------------------------------
+
+/// Revokes read permission on `dir` itself, which defeats `read_dir` with
+/// EACCES — the failure the exit-status fix routes to exit 2. Locking a file
+/// *inside* the directory is not enough: listing a directory does not read
+/// its children, so that exercises a worker error, not a walk error. The
+/// returned guard restores the mode when it drops (even if an assert fails), so
+/// the `TempDir` can still walk and delete the tree. The function verifies the
+/// lock actually bites: root reads through 000, so on such a system there is
+/// nothing to exercise and the test returns early (mirroring the non-UTF-8
+/// walk test's APFS convention).
+#[cfg(unix)]
+fn lock_directory(dir: &Path) -> Option<LockedDir> {
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o000)).ok()?;
+    let guard = LockedDir(dir.to_path_buf());
+    if fs::read_dir(dir).is_ok() {
+        return None; // running as root (or equivalent): EACCES unreachable
+    }
+    Some(guard)
+}
+
+#[cfg(unix)]
+struct LockedDir(std::path::PathBuf);
+
+#[cfg(unix)]
+impl LockedDir {
+    fn path(&self) -> &str {
+        self.0.to_str().unwrap()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LockedDir {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directory_exits_2_like_any_other_error() {
+    let dir = fixture();
+    let ok = dir.path().join("ok.txt");
+    fs::write(&ok, b"a needle\n").unwrap();
+    let bad = dir.path().join("locked");
+    fs::create_dir(&bad).unwrap();
+    let Some(locked) = lock_directory(&bad) else {
+        return;
+    };
+
+    // A match exists in ok.txt, so without the fix the run exits 1 (the walk
+    // error was invisible) instead of 2 (error outranks match), losing the
+    // only signal that the directory was unreadable.
+    greep()
+        .args(["needle", locked.path(), ok.to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stdout(predicates::str::contains("a needle"))
+        .stderr(predicates::str::contains("unable to open directory"));
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directory_is_the_only_argument_still_exits_2() {
+    let dir = fixture();
+    let bad = dir.path().join("locked");
+    fs::create_dir(&bad).unwrap();
+    let Some(locked) = lock_directory(&bad) else {
+        return;
+    };
+
+    // Nothing matched (the directory was never searched) and an error occurred:
+    // before the fix this exited 1, indistinguishable from a plain no-match.
+    greep()
+        .args(["needle", locked.path()])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("unable to open directory"));
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directory_counts_in_the_timing_error_total() {
+    let dir = fixture();
+    let bad = dir.path().join("locked");
+    fs::create_dir(&bad).unwrap();
+    let Some(locked) = lock_directory(&bad) else {
+        return;
+    };
+
+    // `errors=` must agree with the exit status: a run that exits 2 for a walk
+    // error cannot report `errors=0`.
+    greep()
+        .args(["-t", "needle", locked.path()])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("errors=1 "));
 }
 
 #[test]

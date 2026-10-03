@@ -69,8 +69,8 @@ fn run() -> i32 {
         return EXIT_MATCH;
     }
 
-    let resolved = match resolve(args) {
-        Ok(r) => r,
+    let (resolved, walk_errors) = match resolve(args) {
+        Ok((r, walk_errors)) => (r, report_walk_errors(&walk_errors)),
         Err(e) => {
             eprintln!("error: {e}");
             return EXIT_ERROR;
@@ -118,9 +118,11 @@ fn run() -> i32 {
 
     let mut totals = RunTotals {
         timings: Vec::with_capacity(if timing { handles.len() } else { 0 }),
+        // Seeded so the -t summary's `errors=` agrees with the exit status.
+        errors: walk_errors,
         ..RunTotals::default()
     };
-    let mut any_error = false;
+    let mut any_error = walk_errors > 0;
 
     // Join in spawn order and emit each file's matches as it lands, so the match
     // text is freed per file instead of accumulating until every thread is done.
@@ -271,8 +273,24 @@ fn megabytes_per_second(bytes: u64, micros: u128) -> f64 {
     bytes as f64 / micros as f64
 }
 
+/// Prints each directory the walk could not open and returns how many there
+/// were. Such a directory is an error just like a file a worker could not
+/// read: reported, counted, and exit status 2.
+fn report_walk_errors(errors: &[String]) -> usize {
+    for err in errors {
+        eprintln!("error: {err}");
+    }
+    errors.len()
+}
+
 fn print_timing_summary(algorithm_code: &str, totals: &RunTotals, wall: Duration) {
-    let command: Vec<String> = std::env::args().collect();
+    // `args_os`, not `args`: a non-UTF-8 *filename* reaches argv fine (paths are
+    // PathBuf end to end), and `args()` would panic unwrapping it. `#COMMAND`
+    // is an echo of what was invoked, and lossy display is exactly the right
+    // fidelity for an echo — the same compromise the match output already makes.
+    let command: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     eprintln!("#COMMAND {}", command.join(" "));
 
     let files = totals.files;
