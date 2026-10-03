@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
+use std::fmt::Write as _;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -441,6 +442,35 @@ fn multi_file_output_is_in_argument_order() {
             b.to_str().unwrap(),
             a.to_str().unwrap(),
         ])
+        .assert()
+        .code(0)
+        .stdout(expected);
+}
+
+/// The pool runs a fixed number of workers, so with far more files than workers
+/// results arrive out of order and must be put back. Three files would never
+/// exercise that; enough to cycle the reorder window many times will.
+#[test]
+fn many_more_files_than_workers_still_come_out_in_argument_order() {
+    let dir = fixture();
+    // Reverse alphabetical, so neither sorting nor completion order can pass.
+    let files: Vec<_> = (0..300)
+        .rev()
+        .map(|i| {
+            let p = dir.path().join(format!("f{i:03}.txt"));
+            fs::write(&p, "needle\n").unwrap();
+            p
+        })
+        .collect();
+
+    let mut expected = String::new();
+    for p in &files {
+        writeln!(expected, "{}:1 needle", p.display()).unwrap();
+    }
+
+    greep()
+        .arg("needle")
+        .args(&files)
         .assert()
         .code(0)
         .stdout(expected);
