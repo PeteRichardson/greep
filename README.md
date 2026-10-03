@@ -306,7 +306,7 @@ The rules, and their edges:
 |------|---------|
 | `0` | At least one match was found. |
 | `1` | No matches were found. |
-| `2` | An error occurred (unreadable file, bad argument, unknown algorithm). |
+| `2` | An error occurred (unreadable file or directory, bad argument, unknown algorithm). |
 
 An error outranks a match: a run that both matched something and failed to open
 another file exits `2`.

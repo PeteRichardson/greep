@@ -71,7 +71,13 @@ pub fn print_algorithm_list() {
     }
 }
 
-pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
+/// Returns the resolved arguments, plus any errors the directory walk hit (an
+/// unreadable directory). The errors ride out as strings because the caller
+/// only needs to report them and count them for exit status — it never acts on
+/// them per path. A directory that failed to open contributes no files of its
+/// own, so there is no per-file slot for its error; it is a run-level error,
+/// exactly like a file a worker cannot read.
+pub fn resolve(args: Args) -> Result<(ResolvedArgs, Vec<String>), AppError> {
     // Guard at the argument boundary, so neither algorithm needs an empty-word
     // path. `grep ""` matches every line; silently matching nothing was worse
     // than either answer.
@@ -99,13 +105,18 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
         vec![PathBuf::from("/dev/stdin")]
     };
 
-    Ok(ResolvedArgs {
-        verbose: args.verbose,
-        timing: args.timing,
-        algorithm_code: args.algorithm,
-        search_word,
-        files: expand_paths(initial_files),
-    })
+    let (files, walk_errors) = expand_paths(initial_files);
+
+    Ok((
+        ResolvedArgs {
+            verbose: args.verbose,
+            timing: args.timing,
+            algorithm_code: args.algorithm,
+            search_word,
+            files,
+        },
+        walk_errors,
+    ))
 }
 
 #[cfg(test)]
@@ -152,18 +163,20 @@ mod tests {
     #[test]
     fn defaults_to_stdin_when_no_files_given() {
         let args = base_args();
-        let resolved = resolve(args).unwrap();
+        let (resolved, walk_errors) = resolve(args).unwrap();
         assert_eq!(resolved.files, vec![PathBuf::from("/dev/stdin")]);
+        assert!(walk_errors.is_empty(), "no walk errors expected");
     }
 
     #[test]
     fn uses_positional_files_when_given() {
         let mut args = base_args();
         args.files = vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")];
-        let resolved = resolve(args).unwrap();
+        let (resolved, walk_errors) = resolve(args).unwrap();
         assert_eq!(
             resolved.files,
             vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]
         );
+        assert!(walk_errors.is_empty(), "no walk errors expected");
     }
 }

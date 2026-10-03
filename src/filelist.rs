@@ -91,20 +91,30 @@ pub fn read_filelist(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-pub fn expand_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+/// Expands directory arguments into the files they contain.
+///
+/// Returns the expanded paths plus any directories that could not be opened. A
+/// failed `read_dir` used to print an error and vanish: it happened on the main
+/// thread before any worker existed, so it never reached the per-file error
+/// channel and the run exited 1 (no match) rather than 2 (error). The errors
+/// come back as strings for the caller to report and count.
+pub fn expand_paths(paths: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<String>) {
     let mut out = Vec::new();
+    let mut errors = Vec::new();
     for path in paths {
         match fs::metadata(&path) {
-            Ok(meta) if meta.is_dir() => walk_directory(&path, &mut out),
+            Ok(meta) if meta.is_dir() => walk_directory(&path, &mut out, &mut errors),
             _ => out.push(path),
         }
     }
-    out
+    (out, errors)
 }
 
-fn walk_directory(dir: &Path, out: &mut Vec<PathBuf>) {
+fn walk_directory(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(dir) else {
-        eprintln!("error: unable to open directory '{}'", dir.display());
+        // One entry per failed directory, so a run's error count and exit
+        // status see it. The search proceeds with what *could* be opened.
+        errors.push(format!("unable to open directory '{}'", dir.display()));
         return;
     };
 
@@ -117,7 +127,7 @@ fn walk_directory(dir: &Path, out: &mut Vec<PathBuf>) {
         }
         let child: PathBuf = entry.path();
         match entry.file_type() {
-            Ok(ft) if ft.is_dir() => walk_directory(&child, out),
+            Ok(ft) if ft.is_dir() => walk_directory(&child, out, errors),
             Ok(ft) if ft.is_file() => out.push(child),
             _ => {}
         }
@@ -290,8 +300,39 @@ mod tests {
 
     #[test]
     fn expand_paths_passes_through_regular_files_and_unstatable_paths() {
-        let result = expand_paths(vec![PathBuf::from("/dev/stdin")]);
+        let (result, errors) = expand_paths(vec![PathBuf::from("/dev/stdin")]);
         assert_eq!(result, vec![PathBuf::from("/dev/stdin")]);
+        assert!(errors.is_empty(), "no walk errors expected");
+    }
+
+    /// An unreadable directory reports an error through the channel the caller
+    /// turns into exit status 2, instead of being skipped silently.
+    #[cfg(unix)]
+    #[test]
+    fn expand_paths_reports_an_unwalkable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = fixture();
+        let dir = tmp.path();
+        let locked = dir.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("x.txt"), b"x").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root reads through a 000 mode, so on such a system there is nothing
+        // to exercise and this returns early — the same convention the
+        // non-UTF-8 name test uses for APFS.
+        let still_readable = fs::read_dir(&locked).is_ok();
+        let (result, errors) = expand_paths(vec![locked.clone()]);
+        // Restore before any assert can fail, so the TempDir can delete x.txt.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if still_readable {
+            return;
+        }
+
+        assert!(result.is_empty(), "a locked directory yields no files");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("unable to open directory"));
     }
 
     #[test]
@@ -305,7 +346,8 @@ mod tests {
         fs::create_dir_all(dir.join(".hiddendir")).unwrap();
         fs::write(dir.join(".hiddendir").join("c.txt"), b"c").unwrap();
 
-        let mut result = expand_paths(vec![dir.to_path_buf()]);
+        let (mut result, errors) = expand_paths(vec![dir.to_path_buf()]);
+        assert!(errors.is_empty(), "no walk errors expected");
         result.sort();
 
         let mut expected = vec![dir.join("a.txt"), dir.join("sub").join("b.txt")];
@@ -331,7 +373,8 @@ mod tests {
             return;
         }
 
-        let result = expand_paths(vec![dir.to_path_buf()]);
+        let (result, errors) = expand_paths(vec![dir.to_path_buf()]);
+        assert!(errors.is_empty(), "no walk errors expected");
         assert_eq!(result.len(), 1);
 
         // The bytes survive the walk, so the path still names the file it came
