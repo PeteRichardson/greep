@@ -1,0 +1,7 @@
+# /code-review writes dated, ephemeral snapshots here. They go stale as soon as
+# the code moves, so they are deliberately not tracked.
+#
+# This pattern excludes code-review reports only. /project-review's
+# PROJECT_REVIEW.md lives in the same directory and *is* tracked, on purpose:
+# it is the durable architectural record.
+reviews/code-review*.md
