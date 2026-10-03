@@ -1,234 +1,278 @@
 ---
-git_sha: 3815ede
-generated_at: 2026-07-28
+git_sha: 43ea602
+generated_at: 2026-10-02
 scope: whole repo (Rust rewrite)
 decisions_recorded: 2026-07-28
+previous_audit: 3815ede (2026-07-28, F1–F34)
 ---
 
-# Project Review — greep
+# Project Review — greep (repeat run)
 
-Audited at `3815ede`, ~766 LOC of Rust across 8 files. Every finding below was
-either read out of the source or reproduced against the release binary; probes
-that failed to confirm a suspicion were dropped rather than softened into
-hedged findings.
+Audited at `43ea602`, ~1 150 LOC of Rust across 5 source files plus 522 lines of
+integration tests. Repeat run of the 2026-07-28 audit (at `3815ede`): every one
+of the 34 findings was re-verified against the current tree. **30 are RESOLVED,
+4 remain open** (F10, F12, F20, F32 — all already filed as GitHub issues
+#15, #17, #25, #37). This run adds **3 new findings (F35–F37)**, two of them
+reproduced against the release binary.
 
 ## Executive summary
 
-1. **`bmh` and `bf` return different results for the same input.** A search word
-   containing a newline matches under `bmh` and never matches under `bf`
-   (reproduced). The cross-algorithm parity test that exists specifically to
-   catch this class of bug has no fixture with a newline in the word, so it
-   passes.
-2. **Exit status is always 0.** No match, every file missing, partial failure —
-   all exit 0 (reproduced). This breaks `if greep foo file; then`, `&&` chains,
-   and any CI use. Confirmed an omission rather than a design choice; grep's
-   0/1/2 convention is the agreed target.
-3. **Binary files dump raw bytes to stdout** (reproduced against `/bin/ls`;
-   mangles the terminal). No binary detection, no `Binary file X matches`.
-4. **No CI exists.** No `.github/` at all. The test suite is good and nothing
-   runs it; `cargo fmt --check` and clippy already fail/warn on committed code.
-5. **`memmap2 0.9.10` carries RUSTSEC-2026-0186** (unsound, unchecked pointer
-   offset). `0.9.11` is available.
-6. Output goes through `println!` per match — stdout lock plus flush per line,
-   on the hot path of a tool whose entire premise is speed.
-7. All matches for all files are retained in memory until the last thread
-   joins; a common word over a large tree holds every matching line at once.
-8. Unbounded thread spawn (one per file, no pool). Survived 12 000 files in
-   testing only because short-lived threads retire faster than they're created
-   — the failure mode needs many simultaneously-slow files, and it's a panic.
-9. A hand-rolled usage string in `main.rs` duplicates clap's generated help,
-   contradicting the design doc's own "help text follows clap conventions".
-10. Documentation split is inverted: `README.md` is two lines and documents none
-    of the six flags; `CLAUDE.md` carries the real user-facing reference.
+1. **`-t` panics (exit 101) when any argv element is non-UTF-8** (F36, new, High).
+   `print_timing_summary` rebuilds `#COMMAND` via `std::env::args()`, which
+   unwraps on invalid UTF-8. Reproduced: `greep -t word caf\xff.txt` prints a
+   clean per-file error, then panics in `env::args`. This re-breaks, for the
+   `-t` path only, exactly what `3084fd0`/issue #39 just fixed for the search
+   path. One-line-class fix: `args_os()`.
+2. **An unreadable directory in the walk prints `error:` but exits 1, not 2**
+   (F35, new, High). `walk_directory`'s `read_dir` failure is printed on the
+   main thread *before* workers exist, so it never reaches `any_error`.
+   Reproduced: `chmod 000 dir; greep word dir` → exit 1. The README's exit
+   status table promises `2` for an unreadable input; scripts can't tell
+   "permission denied" from "no matches".
+3. **The prior audit was fully worked.** All of F1–F9 (algorithm divergence,
+   exit codes, binary bytes, empty word, CVE dep, unbuffered stdout, match
+   retention) and F11–F34 are resolved and test-guarded. The `3815ede` tree was
+   the worst this codebase has been; nothing from that list regressed.
+4. **Still open since the last audit** (all Medium/Low, all already issues):
+   F10 unbounded thread spawn (#15), F12 per-worker `find_algorithm(...).expect`
+   re-resolution (#17), F20 no `--hidden` opt-out (#25), F32 serial directory
+   pre-walk (#37).
+5. **Hygiene is now genuinely good.** `cargo fmt --check` clean, `cargo clippy
+   --all-targets` zero warnings (pedantic is in the `[lints]` table), 70 tests
+   pass, `cargo audit` clean, `cargo machete` finds no unused deps, CI enforces
+   fmt + clippy + test with an advisory pedantic job.
+6. **The tactical pipeline has 4 open issues** from the `/code-review` PR-mode
+   passes (#53–#56), including manifest double-spelling duplicate output (#54),
+   which I independently reproduced (`sub` + `./sub` in one manifest prints the
+   same line twice).
+7. **`docs/.gitignore` is untracked** (F37, Low): the rule that keeps
+   `/code-review` snapshots out of git exists only on this machine; a fresh
+   clone will happily commit them on a bulk `git add docs/`.
 
-No new categories were introduced; all findings fit the existing vocabulary.
+No new categories were introduced; all findings fit the established vocabulary.
 
 ## Architectural mental model
 
-greep is a single binary crate that fans out one OS thread per input file and
-joins them in spawn order. `options.rs` owns the clap surface and produces a
-`ResolvedArgs` after validating the algorithm code, rejecting `-f` combined
-with positional files, and defaulting to `/dev/stdin`; `filelist.rs` then
-expands that list, recursively walking any directory argument and dropping
-dotfiles at every depth. Each worker calls `loader::load`, which reads files
-under 1 GB into a `Vec<u8>` and mmaps only at or above that threshold, then
-runs a `Box<dyn SearchAlgorithm>` over the resulting byte slice. Algorithms
-return `Vec<Match>` (owned line strings) rather than invoking a callback, which
-is what makes them directly unit-testable.
+Structurally unchanged since the 2026-07-28 audit, and still matching
+`docs/specs/2026-06-21-rust-rewrite-design.md`. One clap surface
+(`options.rs`) resolves to `ResolvedArgs`; `filelist.rs` reads the `-f` manifest
+(now with comment/tilde/dedup rules) and expands directories; workers
+`loader::load` (read vs mmap at 1 GiB) and run a `Box<dyn SearchAlgorithm>`;
+`main.rs` joins in spawn order, streams each file's matches through one
+`BufWriter`, and folds everything into `RunTotals`.
 
-The important structural choice is that **nothing prints from inside a worker**.
-Results are collected into `PerFileResult` structs, joined in order, and printed
-by `main` afterward — so multi-file output is deterministic (verified across
-repeated runs), unlike the C predecessor which interleaved. The cost of that
-choice is memory: every match is held until every thread finishes. My model
-matches the design doc in `docs/specs/2026-06-21-rust-rewrite-design.md`; that
-doc is unusually accurate and predicted most of what the code actually does,
-which is rare enough to say out loud. The one place code and doc diverge is CLI
-help text (F14).
+The changes since the audit were **behavioral, not structural**: the exit
+status became grep's 0/1/2 with error-outranks-match; output streams per join
+(`RunTotals` replaces the retained `PerFileResult` vector); timing became
+opt-in (`TimingInfo: Option`, no measurement without `-t`); paths are `PathBuf`
+end to end; binary files are sniffed and reported, not dumped. Two new
+concentrations of logic arrived: manifest semantics in `filelist.rs` (the
+comments/tilde/dedup rules are subtle and well-tested) and the timing summary
+in `main.rs`. The two new findings live exactly at the seams those changes
+created — argv reconstruction in the timing path, and main-thread walk errors
+that bypass the per-file error channel.
 
 ## Findings
 
-| ID | Category | File:Line | Severity | Effort | Description | Recommendation |
-|----|----------|-----------|----------|--------|-------------|----------------|
-| F1 | Correctness & memory safety | src/search/horspool.rs:24 | High | S | `bmh` matches a word containing `\n` across a line boundary and reports a multi-line "line"; `bf` scans within line bounds and never matches. Reproduced: `greep -a bmh "$(printf 'alpha\nbeta')" f` prints 2 lines, `-a bf` prints nothing. Same input, two answers. | **Decided: line-scoped.** `bf` has the correct semantics; fix `bmh` to reject any candidate whose span crosses a `\n`, keeping `-a` a choice between interchangeable implementations. Add the F2 fixture first. |
-| F2 | Test debt | src/search/mod.rs:38 | High | S | The `all_algorithms_agree_on_fixtures` parity test is the designed safety net for exactly F1's bug class (the design doc says so explicitly), but no fixture contains a newline inside the search word, so F1 passes clean. | Add `("alpha\nbeta", b"alpha\nbeta\n", ...)` to `fixtures()`. This single fixture is what makes the harness earn its keep. |
-| F3 | UX & CLI ergonomics | src/main.rs:88 | High | S | Exit status is 0 when nothing matched (reproduced). `grep` returns 1. Breaks `if greep ...`, `&&`/`\|\|` chains, and CI gating. | **Decided: adopt grep's 0/1/2.** Track whether any match was emitted; `std::process::exit(1)` when none. Confirmed an omission, not a design choice. |
-| F4 | Error handling & observability | src/main.rs:75 | High | S | Per-file failures print `# ERROR: ...` to stderr but do not affect exit status — searching a nonexistent file exits 0 (reproduced). A script cannot tell "no matches" from "the file was missing". | **Decided: exit 2** when any `PerFileResult.error` is set, per grep convention. |
-| F5 | UX & CLI ergonomics | src/search/mod.rs:10 | High | M | Binary files emit raw bytes to stdout (reproduced against `/bin/ls`, corrupts terminal state). `Match.line` is a `String` built via `from_utf8_lossy`, so control bytes pass straight through. | Detect NUL in the first block; print `Binary file X matches` once and skip, as grep does. |
-| F6 | Data integrity & robustness | src/search/brute_force.rs:8 | Medium | S | An empty search word silently returns zero matches in both algorithms (reproduced, exit 0). `grep ""` matches every line. Silent, not an error. | **Decided: reject at arg-parse time.** Add an `AppError::EmptySearchWord` variant and check in `options::resolve` (src/options.rs:58), so the guard lives at the boundary and neither algorithm needs an empty-word path. |
-| F7 | Dependency & config debt | Cargo.toml:12 | Medium | S | `memmap2 0.9.10` is subject to RUSTSEC-2026-0186 (unsound: unchecked pointer offset), confirmed by `cargo audit`. `0.9.11` is published. | Bump to `0.9.11`. Exposure is limited — the mmap path only runs at ≥1 GB — but it's a one-line fix. |
-| F8 | Performance & resource hygiene | src/main.rs:73 | Medium | S | `println!` per match acquires the stdout lock and line-flushes for every match, on the hot path of a tool whose stated purpose is speed. | Hold one `BufWriter::new(stdout().lock())` across the whole print loop and `writeln!` into it. |
-| F9 | Performance & resource hygiene | src/main.rs:66 | Medium | M | Every match from every file is retained until all threads join, each `Match` owning a heap `String`. Searching a large tree for a common word holds all matching lines simultaneously. | Stream per-file output as each handle joins (join order already gives determinism), so only one file's matches are live at a time. |
-| F10 | Architectural decay | src/main.rs:52 | Medium | M | One `std::thread::spawn` per file with no pool or cap; `spawn` panics if the OS refuses. 12 000 files survived testing only because threads retire faster than they are created — the failure mode requires many concurrently-slow (large) files, which is exactly the mmap case. | Cap concurrency at roughly `available_parallelism()` with a simple work queue. Not urgent; do it before adding large-file workloads. |
-| F11 | Error handling & observability | src/main.rs:68 | Medium | S | `handle.join().expect("worker thread panicked")` converts one worker panic into a process-wide panic, discarding every other file's already-completed results. | Match on the `Err` and record it as that file's `error`, preserving the rest — the design doc's own "one bad file doesn't stop the others" principle. |
-| F12 | Error handling & observability | src/main.rs:91 | Medium | S | `find_algorithm(...).expect("algorithm validated before spawn")` re-resolves the registry inside every worker and panics on a should-be-impossible state, plus one `Box` allocation per file. | Resolve once in `main` and pass the algorithm in, making the invariant structural instead of asserted. |
-| F13 | UX & CLI ergonomics | src/options.rs:9 | Medium | S | No `--version` flag; `greep --version` is a clap parse error (exit 2, reproduced). Unusual for any installed CLI. | Add `version` to the `#[command(...)]` attribute — one word. |
-| F14 | Documentation drift / UX & CLI ergonomics | src/main.rs:30 | Medium | S | A hand-rolled usage string duplicates clap's generated help and will drift from it. The design doc explicitly states help text should "follow clap's standard conventions rather than the C version's hand-rolled usage string" — code contradicts design. | Delete it; make `search_word` `required_unless_present = "list"` so clap emits usage itself. |
-| F15 | IDIOM | src/options.rs:27 | Medium | S | `search_word: Option<String>` plus a manual `let ... else` in `main` re-implements a constraint clap expresses declaratively. True maintenance severity is Low; flagged at the IDIOM floor for language-fluency value. | `#[arg(value_name = "STRING", required_unless_present = "list")]`, then take it as `String`. Removes F14's usage string as a side effect. |
-| F16 | IDIOM | src/filelist.rs:31 | Medium | S | `match` used to destructure a single pattern where `let ... else` is idiomatic; clippy-confirmed (`single_match_else`). True maintenance severity Low. | `let Ok(entries) = fs::read_dir(dir) else { ...; return; };` — clippy has an autofix. |
-| F17 | IDIOM | src/search/horspool.rs:34 | Medium | S | Bindings `window` and `word` are confusingly similar in the innermost matching loop; clippy-confirmed (`similar_names`). In the one function where an off-by-one is hardest to spot by eye. True maintenance severity Low. | Rename `window` to `win_start` or `offset`. |
-| F18 | Type & contract debt | src/loader.rs:30 | Low | S | `metadata.len() as usize` truncates on 32-bit targets (clippy-confirmed) and trusts `metadata` for the `with_capacity` hint — a lying or special file over-allocates. | `usize::try_from(...).unwrap_or(0)`, and cap the pre-allocation hint. |
-| F19 | Documentation drift | src/filelist.rs:45 | Low | S | The directory walk's `_ => {}` arm silently drops symlinks — a symlinked file inside a searched directory is never searched (reproduced). | **Decided: skipping is correct** (matches `grep -r`); only the silence is the defect. Downgraded from Medium to Low and recategorised: this is now purely a docs item. Note it in the README flag reference and `--help`; no `-R` follow flag wanted. |
-| F20 | UX & CLI ergonomics | src/filelist.rs:41 | Low | M | Dotfile/dotdir skipping is unconditional with no opt-out. Intentional per the design doc, but there is no way to search hidden files at all. | Add `--hidden` when convenient. |
-| F21 | Data integrity & robustness | src/filelist.rs:5 | Low | S | `read_filelist` does not dedupe, support comments, or expand `~`. Duplicate lines produce duplicate threads and duplicate output (confirmed: 12 000 identical entries → 12 000 threads over one file). | Dedupe while preserving order; skip `#` comments. |
-| F22 | Test debt | tests/cli.rs:1 | Medium | S | No test covers the `/dev/stdin` default path or multi-file output ordering. Both work (verified by hand) and both are load-bearing — ordering is the main behavioral improvement over the C version, and nothing guards it. | Add two `assert_cmd` tests: piped stdin, and a fixed multi-file ordering assertion. |
-| F23 | Test debt | src/loader.rs:25 | Medium | M | The mmap branch has no test coverage at all. `MMAP_THRESHOLD_BYTES` is a `const`, so testing it requires a real 1 GB file. Half of the module's reason to exist is unexercised. | Make the threshold a parameter of an inner `load_with_threshold(path, threshold)`; test the mmap branch with a small file and a tiny threshold. |
-| F24 | Test debt | tests/cli.rs:61 | Low | S | `-v/--verbose` output and the per-file `#TIMING` lines are untested; only the all-failed timing summary is covered. | Add assertions for `#TIMING` per-file output on a successful run. |
-| F25 | IDIOM | src/filelist.rs:59 | Medium | S | Tests build temp paths from `process::id()` and clean up with explicit `remove_*` calls that are skipped whenever an assertion fails, leaking fixtures into the temp dir. True maintenance severity Low. | Use the `tempfile` crate as a dev-dependency; cleanup becomes RAII and survives failures. |
-| F26 | Dependency & config debt | Cargo.toml:13 | Low | S | `thiserror = "1"` while 2.0.19 is current. Only used for one three-variant enum, so migration is trivial. | Bump to `2`. |
-| F27 | Dependency & config debt | Cargo.toml:1 | Medium | S | No CI whatsoever — no `.github/`. The suite is genuinely good (21 tests) and nothing enforces it; `cargo fmt --check` and clippy already fail/warn on committed code, which is how F16–F18 survived. | Add a workflow running `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Highest ratio of value to effort in this table. |
-| F28 | Consistency rot | src/filelist.rs:56 | Low | S | `cargo fmt --check` reports drift in committed code (`filelist.rs:56`, `:70`, and others). | Run `cargo fmt`; enforce via F27. |
-| F29 | Documentation drift | README.md:1 | Medium | S | The README is two lines and documents none of the six flags, no usage, no build/install. The real user-facing reference lives in `CLAUDE.md` — documentation aimed at an AI agent is better than the documentation aimed at humans. | **Decided: README is primary.** Move the flag reference into `README.md` and reduce `CLAUDE.md` to a pointer, so there is one source of truth. Fold F19's symlink note in while editing. |
-| F30 | Architectural decay | src/main.rs:16 | Low | S | `PerFileResult.bytes` is computed unconditionally but consumed only in the timing summary. | Trivial; fold into a timing-only struct or leave and ignore. |
-| F31 | Consistency rot | src/main.rs:38 | Low | S | Two error dialects in one binary: hand-written `# ERROR: ...` (a C-era carryover) and clap's standard `error: ...` (reproduced). | **Decided: carryover, unify on clap style.** Confirmed *not* part of the `#TIMING`/`#COMMAND` machine-readable contract, so it can go: switch `main.rs:38`, `main.rs:76` and `filelist.rs:34` to clap's `error:` wording. |
-| F32 | Performance & resource hygiene | src/filelist.rs:19 | Low | M | `expand_paths` stats every path and walks every directory serially on the main thread before a single worker starts — a serial prelude to the parallel phase, proportional to tree size. | Only worth addressing if directory search over large trees becomes a real workload. |
-| F33 | IDIOM | src/search/brute_force.rs:15 | Medium | S | `pos` is always equal to `line_start` after every iteration — two variables tracking one value in the loop where correctness is subtlest. True maintenance severity Low. | Drop `pos`; or express the whole scan as `buf.split(\|&b\| b == b'\n').enumerate()`, which removes the manual index arithmetic entirely. |
-| F34 | Data integrity & robustness | src/filelist.rs:47 | Low | S | `to_string_lossy().into_owned()` mangles non-UTF-8 filenames into U+FFFD, producing a path that then fails to open. Near-unreachable on macOS (APFS enforces UTF-8); a real bug on Linux. | Carry `PathBuf` through instead of `String` if portability is ever a goal. |
+Status: `RESOLVED` = fixed since `3815ede` and re-verified; `OPEN` = carried,
+still present; `NEW` = first seen this run.
 
-34 findings. I stopped where the real ones stopped — for 766 LOC, padding toward
-the usual 30–80 band would have meant inventing filler.
+| ID | Status | Category | File:Line | Severity | Effort | Description | Recommendation |
+|----|--------|----------|-----------|----------|--------|-------------|----------------|
+| F1 | RESOLVED | Correctness & memory safety | src/search/horspool.rs:11 | High | S | `bmh` matched a `\n`-containing word across line boundaries, disagreeing with `bf`. | Fixed: `word.contains(&b'\n')` rejected up front; newline fixture guards it in `search/mod.rs` tests. |
+| F2 | RESOLVED | Test debt | src/search/mod.rs:63 | High | S | Parity test had no newline-in-word fixture. | Fixed: `("alpha\nbeta", b"alpha\nbeta\n", vec![])` in `fixtures()`. |
+| F3 | RESOLVED | UX & CLI ergonomics | src/main.rs:15 | High | S | Exit status always 0. | Fixed: `EXIT_MATCH`/`EXIT_NO_MATCH`/`EXIT_ERROR`, error outranks match; CLI-tested. |
+| F4 | RESOLVED | Error handling & observability | src/main.rs:76 | High | S | Per-file failures didn't affect exit status. | Fixed: `any_error` → exit 2; tested. |
+| F5 | RESOLVED | UX & CLI ergonomics | src/loader.rs:15 | High | M | Binary files dumped raw bytes. | Fixed: `looks_binary` (8 KiB sniff) + `Binary file X matches`; verified against a NUL file. |
+| F6 | RESOLVED | Data integrity & robustness | src/options.rs:57 | Medium | S | Empty search word silently matched nothing. | Fixed: clap requires the word, `AppError::EmptySearchWord` at the boundary; tested. |
+| F7 | RESOLVED | Dependency & config debt | Cargo.toml | Medium | S | `memmap2 0.9.10` RUSTSEC-2026-0186. | Fixed: 0.9.x line, `cargo audit` clean this run. |
+| F8 | RESOLVED | Performance & resource hygiene | src/main.rs:104 | Medium | S | `println!` lock+flush per match. | Fixed: one `BufWriter` over a held `StdoutLock`, final explicit flush. |
+| F9 | RESOLVED | Performance & resource hygiene | src/main.rs:36 | Medium | M | All matches retained until last join. | Fixed: matches printed and dropped per join; only `RunTotals` accumulates. |
+| F10 | OPEN | Architectural decay | src/main.rs:92 | Medium | M | One `std::thread::spawn` per file, no pool or cap; `spawn` panics if the OS refuses. Still filed as issue #15. Risk case unchanged: many concurrently-slow (≥1 GiB mmap) files. | Cap at `available_parallelism()` with a work queue before large-file workloads arrive. Don't do it as a panic response. |
+| F11 | RESOLVED | Error handling & observability | src/main.rs:120 | Medium | S | Worker panic took down the process. | Fixed: `join()` `Err` becomes that file's `error` via `panic_message()`. |
+| F12 | OPEN | Error handling & observability | src/main.rs:204 | Medium | S | `find_algorithm(...).expect("algorithm validated before spawn")` re-resolves the registry per worker; `algorithm_code` is cloned per file for it. Issue #17. | Resolve once in `run()` and hand the `Box<dyn SearchAlgorithm>` (or a `&'static` factory result) to workers, making the invariant structural. |
+| F13 | RESOLVED | UX & CLI ergonomics | src/options.rs:19 | Medium | S | No `--version`. | Fixed: `version` on `#[command]`; CLI tests assert `-V`/`--version`. |
+| F14 | RESOLVED | Documentation drift / UX & CLI ergonomics | src/options.rs:17 | Medium | S | Hand-rolled usage string duplicated clap's help. | Fixed: deleted; a CLI test asserts clap's `Usage:` and the absence of the old string. |
+| F15 | RESOLVED | IDIOM | src/options.rs:38 | Medium | S | Manual `let-else` in `main` re-implemented a clap constraint. | Fixed: `required_unless_present = "list"`; `resolve` folds `None` with a documented `unwrap_or_default` (the `Option` is now what clap itself requires). |
+| F16 | RESOLVED | IDIOM | src/filelist.rs:106 | Medium | S | `match` for a single pattern in `walk_directory`. | Fixed: `let ... else`. |
+| F17 | RESOLVED | IDIOM | src/search/horspool.rs:24 | Medium | S | Confusingly similar `window`/`word` bindings in BMH's innermost loop. | Fixed: `win_start`; clippy pedantic is now warning-free. |
+| F18 | RESOLVED | Type & contract debt | src/loader.rs:52 | Low | S | `metadata.len() as usize` truncation + lying-hint over-allocation. | Fixed: `usize::try_from(len.min(threshold)).unwrap_or(0)`, commented. |
+| F19 | RESOLVED | Documentation drift | src/options.rs:10 | Low | S | Symlink skipping was silent. | Fixed: `DIRECTORY_WALK_HELP` in `--help` + README known limitations. |
+| F20 | OPEN | UX & CLI ergonomics | src/filelist.rs:112 | Low | M | Dotfile skipping unconditional, no `--hidden` opt-out. Issue #25. Intentional per design doc; flag when convenient. | Add `--hidden` if hidden-file search ever becomes a real request. |
+| F21 | RESOLVED | Data integrity & robustness | src/filelist.rs:66 | Low | S | Manifest: no dedupe, no comments, no `~`. | Fixed: all three, with 8 unit tests. Follow-on sharp edges tracked tactically as #54/#55/#56. |
+| F22 | RESOLVED | Test debt | tests/cli.rs | Medium | S | No stdin-default or multi-file ordering tests. | Fixed: piped-stdin cases (incl. 60 KB) + ordering test. |
+| F23 | RESOLVED | Test debt | src/loader.rs:39 | Medium | M | mmap branch untested (1 GiB `const`). | Fixed: `load_with_threshold` injection; branch tested at 12 bytes, `>=` pinned by a 12/13 pair. |
+| F24 | RESOLVED | Test debt | tests/cli.rs:435 | Low | S | `-v` and per-file `#TIMING` untested. | Fixed: incl. `timing_and_verbose_are_independent`. |
+| F25 | RESOLVED | IDIOM | src/filelist.rs:126 | Medium | S | `process::id()` fixture paths with cleanup skipped on failure. | Fixed: `tempfile::TempDir` everywhere; no `process::id()` remains. |
+| F26 | RESOLVED | Dependency & config debt | Cargo.toml | Low | S | `thiserror = "1"`. | Fixed: `2`. |
+| F27 | RESOLVED | Dependency & config debt | .github/workflows/ci.yml | Medium | S | No CI. | Fixed: fmt + clippy (blocking) + test + advisory pedantic, with concurrency cancellation. |
+| F28 | RESOLVED | Consistency rot | src/filelist.rs | Low | S | `cargo fmt --check` drift in committed code. | Fixed: clean this run, enforced in CI. |
+| F29 | RESOLVED | Documentation drift | README.md | Medium | S | Two-line README; real reference in CLAUDE.md. | Fixed: full README reference; CLAUDE.md is now a one-line `@AGENTS.md` pointer. |
+| F30 | RESOLVED | Architectural decay | src/main.rs:27 | Low | S | `bytes` measured unconditionally, consumed only under `-t`. | Fixed: `TimingInfo: Option`, measured only when `-t`. |
+| F31 | RESOLVED | Consistency rot | src/main.rs:81 | Low | S | Two error dialects (`# ERROR:` vs clap's `error:`). | Fixed: all per-file and resolve errors use `error:`; the `#`-prefix contract is reserved for timing. |
+| F32 | OPEN | Performance & resource hygiene | src/filelist.rs:94 | Low | M | `expand_paths` stats and walks the whole tree serially before any worker starts. Issue #37. | Only worth addressing if large-tree directory search becomes a real workload (the walk is I/O-bound and would parallelize trivially). |
+| F33 | RESOLVED | IDIOM | src/search/brute_force.rs:10 | Medium | S | `pos` ≡ `line_start` double-tracking in the bf scan. | Fixed: scan expressed as `split(|&b| b == b'\n').enumerate()`. |
+| F34 | RESOLVED | Data integrity & robustness | src/filelist.rs | Low | S | `to_string_lossy` mangled non-UTF-8 names into unopenable paths. | Fixed: `PathBuf` end to end, dotfile check on `as_encoded_bytes()`; regression test (real on Linux, early-returns on APFS). |
+| F35 | **NEW** | Error handling & observability | src/filelist.rs:106 | High | S | An unreadable directory in the walk prints `error: unable to open directory` on the **main thread, before any worker exists**, so it never reaches `any_error` — the run exits **1** (no match), not **2**. Reproduced: `chmod 000 d; greep word d` → error printed, exit 1. Violates the README Exit Status table (`2` = an error occurred, unreadable file). A script cannot distinguish "permission denied" from "nothing matched". | Give the walk an error channel: `walk_directory`/`expand_paths` return (or accumulate) their failures, and `run()` folds them into `any_error` (exit 2) and the error output. Add a CLI test (mode-revoked dir on the CI runner). |
+| F36 | **NEW** | Correctness & memory safety | src/main.rs:275 | High | S | `std::env::args()` panics (`called Result::unwrap()`) if **any** argv element is non-UTF-8, and `print_timing_summary` calls it — so `greep -t word <non-UTF-8 name>` panics with a raw Rust note (exit 101) *after* printing clean results. Reproduced. Directly contradicts `3084fd0`/issue #39, whose entire point is that non-UTF-8 filenames are first-class; the search path handles them, the `#COMMAND` line doesn't. | `std::env::args_os().map(|a| a.to_string_lossy().into_owned())` — `#COMMAND` is a human/machine-readable echo, and lossy display is exactly right for it. Add a test that constructs a non-UTF-8 `PathBuf` argument (unix `From<OsString>`/`as_bytes`) and runs with `-t`. |
+| F37 | **NEW** | Dependency & config debt | docs/.gitignore | Low | S | The ignore rule keeping `/code-review` snapshots (`reviews/code-review*.md`) out of git lives in an **untracked** file, so it exists only on this machine. A fresh clone has no such rule, and a bulk `git add docs/` there commits the deliberately-ephemeral snapshots (the comments in the file say they "go stale as soon as the code moves"). The guardrail for a documented convention is itself unguarded. | Commit `docs/.gitignore`. (Or, if the local-only state is deliberate, say so in the file and add the pattern to the root `.gitignore` instead — see Open questions.) |
+
+37 rows: 30 resolved, 4 open, 3 new. For a 1 150-LOC crate that is about
+where the real findings stop; I did not pad.
+
+## Related tactical findings
+
+The two `/code-review` reports in `docs/reviews/`
+(`code-review_PR46_2026-07-30.md`, `code-review_PR51_2026-07-30.md`) are
+**PR-mode** snapshots (frontmatter `pr:`) of branch heads, so they are out of
+scope for this audit and are not re-quoted here. The live record from that
+pipeline is the four still-open issues:
+
+- **#54** — manifest dedupe runs *before* `expand_paths`, so `sub` + `./sub`
+  (or a directory listed under two spellings) reach the worker pool twice and
+  print the same match line twice. **Independently reproduced this run.**
+- **#55** — comment lines in a manifest are skipped silently; no `-v` note.
+- **#56** — the `read_filelist` tilde tests read the real `$HOME` and assert
+  paths shaped from it, instead of using the injectable
+  `expand_tilde_against` the unit tests already use.
+- **#53** — `--version` output is asserted only as `contains(version)`, not the
+  README-documented `greep <version>` format.
 
 ## Top 5 — if you fix nothing else
 
-### 1. Exit codes (F3, F4)
+### 1. F36 — stop panicking on non-UTF-8 argv under `-t` (S)
 
-The single highest-impact fix. Right now greep cannot be used in a shell
-conditional at all.
-
-```rust
-// main.rs, end of main()
-let any_match = results.iter().any(|r| !r.matches.is_empty());
-let any_error = results.iter().any(|r| r.error.is_some());
-std::process::exit(if any_error { 2 } else if any_match { 0 } else { 1 });
-```
-
-Add a CLI test per branch — this is exactly the kind of thing that silently
-regresses.
-
-### 2. Algorithm divergence (F1 + F2)
-
-Two algorithms disagreeing is worse than either being wrong, because `-a` is
-advertised as an interchangeable choice. Fix the fixture first — it fails, then
-you know the fix works:
+A raw std panic in a tool that just spent a PR becoming non-UTF-8-safe.
 
 ```rust
-// search/mod.rs fixtures()
-("alpha\nbeta", b"alpha\nbeta\ngamma\n" as &[u8], vec![/* agreed expectation */]),
+// src/main.rs, print_timing_summary
+- let command: Vec<String> = std::env::args().collect();
++ // `args_os` + lossy: a non-UTF-8 *filename* reaches argv fine (paths are
++ // PathBuf end to end), and `#COMMAND` is an echo — display-quality is enough.
++ let command: Vec<String> = std::env::args_os()
++     .map(|a| a.to_string_lossy().into_owned())
++     .collect();
 ```
 
-Then make BMH reject a candidate whose span crosses a `\n` — line-scoped
-semantics are the confirmed intent, so `bf` is the reference and `bmh` is the
-one that moves.
+Test: unix-only, build a `PathBuf` from `OsString` bytes containing `0xFF`,
+run with `-t`, assert exit 2 (file missing) rather than 101.
 
-### 3. Binary detection (F5)
+### 2. F35 — route walk failures into the exit status (S)
 
 ```rust
-// before searching, in run_file
-if loaded.as_bytes().iter().take(8192).any(|&b| b == 0) {
-    // report "Binary file {filename} matches" if any match, then skip printing lines
-}
+// src/filelist.rs — the walk reports, the caller decides
+- let Ok(entries) = fs::read_dir(dir) else {
+-     eprintln!("error: ..."); return;
+- };
++ fn walk_directory(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<String>) { /* push */ }
+// resolve() or run(): collect walk errors, print them, set any_error → exit 2
 ```
 
-Cheap, and it stops the tool from corrupting the user's terminal.
+Keep the per-directory "search the rest anyway" behavior; only the exit code
+changes. CLI test with a `chmod 000` dir (works on the ubuntu runner; guard
+for root).
 
-### 4. Buffered output + streaming (F8, F9)
+### 3. F12 — resolve the algorithm once (S)
 
-One `BufWriter` around a held `StdoutLock` for the whole print loop fixes F8.
-Printing each file's matches as its handle joins fixes F9 without losing
-determinism, since join order is already spawn order.
+Open since the last audit. In `run()`: `let algorithm = find_algorithm(&code).expect(...)`
+after `resolve()` (which already validated it), and pass `&algorithm` into
+`run_file`; drop the per-file `algorithm_code` clone and the in-worker re-lookup.
+The `expect` stays but sits on the validated main-thread path where it truly is
+unreachable.
 
-### 5. CI (F27)
+### 4. F10 — cap thread concurrency (M)
 
-```yaml
-# .github/workflows/ci.yml
-- run: cargo test
-- run: cargo clippy --all-targets -- -D warnings
-- run: cargo fmt --check
-```
+`let pool = thread_pool(std::thread::available_parallelism()...)` with a channel
+of file names; workers pull until the queue drains. Determinism is preserved
+trivially because output order comes from *join/emit order*, so collect results
+into a `HashMap<PathBuf, PerFileResult>` and emit in argument order. Do this
+before, not after, a ≥1 GiB multi-file workload exposes the `spawn`-panic mode.
 
-Every one of F16, F17, F18, F28 would have been caught before commit.
+### 5. F37 — commit `docs/.gitignore` (S)
+
+One `git add docs/.gitignore && git commit`. Without it the
+"ephemeral snapshots" convention exists only on one machine.
 
 ## Quick wins
 
-Low effort, Medium-or-higher severity:
+Low effort × Medium-or-higher severity:
 
-- [ ] F7 — bump `memmap2` to 0.9.11 (RUSTSEC advisory)
-- [ ] F27 — add the three-line CI workflow
-- [ ] F2 — add the newline fixture to the parity test
-- [ ] F3 / F4 — exit codes
-- [ ] F13 — add `version` to the clap command attribute
-- [ ] F14 / F15 — `required_unless_present = "list"`, delete the usage string
-- [ ] F16 — `cargo clippy --fix` (autofix available)
-- [ ] F28 — `cargo fmt`
-- [ ] F6 — reject an empty search word in `options::resolve`
-- [ ] F29 — move the flag reference into the README (fold in F19's symlink note)
-- [ ] F31 — unify hand-written errors on clap's `error:` style
+- [ ] **F36** — `args_os()` in `print_timing_summary` (High, S)
+- [ ] **F35** — walk errors → exit 2 (High, S)
+- [ ] **F12** — resolve algorithm once, pass into workers (Medium, S)
+
+(Also S, listed for completeness though Low-severity: F37 — commit
+`docs/.gitignore`.)
 
 ## Things that look bad but are actually fine
 
-- **`unsafe { Mmap::map(&file) }` (loader.rs:26).** The obvious thing to flag in
-  a Rust audit, and wrong to flag. `memmap2`'s API is unsafe because another
-  process can truncate the file and hand you a SIGBUS — that's inherent to mmap,
-  not a defect here. The only actionable part is the version bump (F7).
-- **The 1 GB mmap threshold making mmap look like dead code.** It does mean mmap
-  effectively never runs in normal use, which reads as a red flag. The design doc
-  justifies it concretely: `mmap` defers page-ins into the timed `search()` call
-  and so pollutes `-t` measurements, while remaining the right choice at sizes
-  where the kernel needs to reclaim clean pages. That's a real argument, and the
-  threshold is listed as a known future flag. Intentional.
-- **Collecting all results before printing (main.rs:66).** Looks like the classic
-  "should have streamed" mistake, and F9 does flag its memory cost — but the
-  ordering it buys is a genuine improvement over the C version's interleaved
-  output, verified deterministic across repeated runs. Fix the memory by
-  streaming *in join order*; do not fix it by printing from workers.
-- **`Box<dyn SearchAlgorithm>` dynamic dispatch.** Reflex says virtual call in a
-  search tool. It resolves once per *file*, not per byte or per line — the inner
-  loops are static. Irrelevant to performance.
-- **`search_word.clone()` per spawned thread (main.rs:61).** One small `String`
-  clone per file, against a backdrop of opening and reading that file. `Arc`
-  would be strictly more code for unmeasurable gain.
-- **One thread per file with no pool (F10).** Flagged, but deliberately at
-  Medium rather than High: I tried to break it at 12 000 files and could not,
-  because threads retire faster than they spawn. Don't rewrite this into a
-  thread pool as a panic response; do it when large-file workloads arrive.
-- **`greep` shadowing `grep`'s name and flags.** Deliberate — it's the project's
-  entire premise.
+- **`unsafe { Mmap::map(&file) }` (src/loader.rs:45).** Carried from the last
+  audit and still wrong to flag: the `unsafe` is `memmap2`'s API surface
+  (external truncation → SIGBUS), inherent to mmap, not a defect in this code.
+- **The 1 GiB mmap threshold making mmap look like dead code.** Design doc
+  justifies it (mmap page-ins would pollute the `-t` measurement at small
+  sizes; it's the right call where the kernel must reclaim clean pages).
+  `load_delegates_with_the_one_gibibyte_threshold` even pins the constant.
+  Intentional.
+- **`search_word.clone()` and `algorithm_code.clone()` per spawned thread
+  (src/main.rs:97-100).** Two small `String` clones against a backdrop of
+  opening, stat-ing, and reading that file. `Arc` is strictly more code for
+  unmeasurable gain. (F36/F12's fixes touch these lines for other reasons.)
+- **`Box<dyn SearchAlgorithm>` dynamic dispatch in a "fast search tool".**
+  Resolves once per *file*; the inner loops are monomorphic. Irrelevant.
+- **Manifest `trim_end_matches(['\r', '\n'])` (src/filelist.rs:74) mangles a
+  legal filename with a trailing CR.** This is CRLF support doing its job; a
+  trailing-LF name is unrepresentable in a line-based manifest anyway, and a
+  trailing-CR name is rarer than Windows line endings. Deliberate. (Document
+  it — see Open questions.)
+- **`args.search_word.unwrap_or_default()` in `resolve` (src/options.rs:60)
+  looks like it papers over a clap invariant.** The comment says exactly what
+  it is: `required_unless_present = "list"` makes `None` unreachable in
+  practice, and the fold degrades gracefully instead of asserting.
+- **`expanded.clone()` per manifest line for the dedupe set
+  (src/filelist.rs:87).** Manifests are cold paths; one `PathBuf` clone per
+  line next to a `HashSet` insert is not a finding.
+- **`# Processing file {i}` prints at *spawn* time (src/main.rs:90), and an
+  unreadable directory's error line can precede the `# Searching for` line.**
+  It's a spawn trace, not a completion log, and both are stderr cosmetics.
+  (F35's fix will move the walk error; the ordering quirk itself is not
+  worth a change.)
+- **Clippy pedantic is advisory-only in CI** (`.github/workflows/ci.yml`).
+  The workflow comment states the rationale — advisory job, never a required
+  check — and local `cargo clippy` applies the same warn-level policy via the
+  `[lints]` table. Consistent and documented; today it happens to be
+  warning-free anyway.
+- **One thread per file, no pool (F10).** Still flagged, still deliberately
+  Medium: the last audit stress-tested 12 000 files and the retirement rate
+  held. Not a "fix now" — a "fix before large-file workloads" (Top 5, #4).
 
-## Maintainer decisions (resolved 2026-07-28)
+## Maintainer decisions (resolved 2026-07-28 — carried forward)
 
-Every question this audit raised has been answered. Recorded here because the
-answers are design intent that isn't derivable from the code — a future reader
-(or a regenerated version of this report) would otherwise have to re-ask them.
+Carried unchanged from the previous run per the repeat-run protocol: these are
+decisions, not observations, and rescanning the code will not recover them.
 
 | # | Question | Decision | Effect on findings |
 |---|----------|----------|--------------------|
-| 1 | Are exit codes an intentional omission? | **Adopt grep's 0/1/2** — 0 matched, 1 no match, 2 any file errored. | F3, F4 confirmed High; both are now specified, not speculative. |
-| 2 | Is `# ERROR:` a deliberate machine-readable prefix? | **No — C-era carryover.** Not part of the `#TIMING`/`#COMMAND`/`#TIMING_SUMMARY` contract. | F31 stands; unify on clap's `error:` style. Those three `#`-prefixed formats remain a real output contract and must not be touched. |
-| 3 | Is `bmh` line-scoped or a raw byte searcher? | **Line-scoped.** `-a` selects between interchangeable implementations. | F1 fix lands in `bmh` (`bf` is the reference). F2's fixture asserts agreement, not divergence. |
-| 4 | Symlinks in directory walks? | **Skip, matching `grep -r`** — no follow flag wanted. | F19 downgraded Medium → Low and recategorised as Documentation drift. Behavior is correct; only the silence was the defect. |
-| 5 | Is `CLAUDE.md` the primary user documentation? | **No — README is primary;** `CLAUDE.md` becomes a pointer. | F29 stands as written. |
-| 6 | Empty search word behavior? | **Reject at arg-parse time** rather than matching every line. | F6's fix moves out of the algorithms and into `options::resolve`; neither algorithm needs an empty-word path. |
+| 1 | Are exit codes an intentional omission? | **Adopt grep's 0/1/2** — 0 matched, 1 no match, 2 any file errored. | F3/F4 (resolved). F35 is the same contract applied to a path the original decision didn't cover: a *walk* failure, not a *file* failure. |
+| 2 | Is `# ERROR:` a deliberate machine-readable prefix? | **No — C-era carryover.** The `#` prefix belongs to `#TIMING`/`#COMMAND`/`#TIMING_SUMMARY` only. | F31 (resolved). Consequence for F36: `#COMMAND` must stay lossy-display-safe rather than switching to a non-`#` form. |
+| 3 | Is `bmh` line-scoped or a raw byte searcher? | **Line-scoped.** `-a` selects interchangeable implementations. | F1/F2 (resolved); the newline fixture enforces it permanently. |
+| 4 | Symlinks in directory walks? | **Skip, matching `grep -r`** — no follow flag. | F19 (resolved). Explicit-argument symlinks are still followed; the asymmetry is documented in `--help` and the README. |
+| 5 | Is `CLAUDE.md` the primary user documentation? | **No — README is primary.** | F29 (resolved; CLAUDE.md is now a pointer to AGENTS.md). |
+| 6 | Empty search word behavior? | **Reject at arg-parse time.** | F6 (resolved). |
 
-No open questions remain. If this report is regenerated against a later commit,
-carry this table forward — these are decisions, not observations, and rescanning
-the code will not recover them.
+## Open questions for the maintainer
+
+1. **Manifest normalization** (relates to open issue #54): should `sub` and
+   `./sub` collapse to one entry? String-level dedupe (current, documented)
+   misses lexical twins; canonicalizing via `fs::canonicalize` would catch
+   them but also rewrites every path (relative → absolute) and breaks the
+   "the path you wrote is the path you get" printing. What's the intended
+   contract — "identical lines dedupe" or "identical *files* dedupe"?
+2. **Trailing-CR manifest rule**: the README's manifest section documents
+   leading-whitespace, comments, tilde, and dedupe, but not that a trailing
+   CR is trimmed (CRLF support). Document it, or leave it as an
+   implementation detail?
+3. **`docs/.gitignore`** (F37): is the untracked state a deliberate local
+   guardrail, or an uncommitted file? If deliberate, the pattern should move
+   to the root `.gitignore` so the convention survives a clone; if accidental,
+   commit it.
