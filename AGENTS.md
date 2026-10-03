@@ -1,7 +1,7 @@
 ## Project
 
-greep — a homegrown, simplified grep written in Rust. Spawns one thread per
-input file for parallel searching; files under 1GB are read into memory,
+greep — a homegrown, simplified grep written in Rust. Searches files in
+parallel on a fixed pool of worker threads; files under 1GB are read into memory,
 files at or above 1GB are memory-mapped.
 
 ## Build
@@ -29,18 +29,21 @@ When a change alters observable behavior, update the README, not this file.
 
 ## Architecture
 
-- `src/main.rs` — entry point: orchestration, thread spawn/join, printing, `-t`
-  timing summary.
+- `src/main.rs` — entry point: orchestration, wiring the walk to the pool,
+  printing, `-t` timing summary.
+- `src/pool.rs` — `run_ordered()`: a fixed pool of worker threads fed lazily
+  from an iterator, results handed back in job order through a bounded window.
 - `src/options.rs` — `clap`-derived `Args`, `AppError`, and `resolve()` which
-  validates the algorithm code, resolves the final file list (filelist vs.
-  positional vs. default stdin), and expands directories.
-- `src/filelist.rs` — `read_filelist`, `expand_paths` (recursive directory walk,
-  skipping dotfiles/dotdirs).
+  validates the algorithm code and resolves the paths to search (filelist vs.
+  positional vs. default stdin). Directories are not expanded here.
+- `src/filelist.rs` — `read_filelist`, `walk` (lazy depth-first directory walk,
+  skipping dotfiles/dotdirs; an unreadable directory is a `WalkItem` in sequence).
 - `src/loader.rs` — `load()`: reads files under 1GB into memory, memory-maps
   files at or above 1GB via `memmap2`.
 - `src/search/` — `SearchAlgorithm` trait + registry (`find_algorithm`,
   `list_algorithms`). `brute_force.rs` (`Bf`) and `horspool.rs` (`Bmh`) each
   report at most one match per line.
 
-The threading model in `main.rs` spawns and joins one thread per file with no
-upper bound on concurrency.
+The thread count is `available_parallelism()`, whatever the file count. The
+walk runs on the main thread, interleaved with emitting results, so it overlaps
+the search instead of preceding it.

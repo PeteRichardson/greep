@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::filelist::{expand_paths, read_filelist};
+use crate::filelist::read_filelist;
 use crate::search::{find_algorithm, list_algorithms};
 
 /// Appended to `--help`. The directory walk's skipping rules cannot be inferred
@@ -62,7 +62,9 @@ pub struct ResolvedArgs {
     pub timing: bool,
     pub algorithm_code: String,
     pub search_word: String,
-    pub files: Vec<PathBuf>,
+    /// The paths to search, as given. Directories are not yet expanded: the walk
+    /// runs alongside the search, so that it is not a serial prelude to it.
+    pub paths: Vec<PathBuf>,
 }
 
 pub fn print_algorithm_list() {
@@ -71,13 +73,7 @@ pub fn print_algorithm_list() {
     }
 }
 
-/// Returns the resolved arguments, plus any errors the directory walk hit (an
-/// unreadable directory). The errors ride out as strings because the caller
-/// only needs to report them and count them for exit status — it never acts on
-/// them per path. A directory that failed to open contributes no files of its
-/// own, so there is no per-file slot for its error; it is a run-level error,
-/// exactly like a file a worker cannot read.
-pub fn resolve(args: Args) -> Result<(ResolvedArgs, Vec<String>), AppError> {
+pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
     // Guard at the argument boundary, so neither algorithm needs an empty-word
     // path. `grep ""` matches every line; silently matching nothing was worse
     // than either answer.
@@ -97,7 +93,7 @@ pub fn resolve(args: Args) -> Result<(ResolvedArgs, Vec<String>), AppError> {
         return Err(AppError::ConflictingFileArgs);
     }
 
-    let initial_files = if let Some(path) = &args.filelist {
+    let paths = if let Some(path) = &args.filelist {
         read_filelist(path).map_err(|e| AppError::FilelistOpen(path.clone(), e))?
     } else if !args.files.is_empty() {
         args.files
@@ -105,18 +101,13 @@ pub fn resolve(args: Args) -> Result<(ResolvedArgs, Vec<String>), AppError> {
         vec![PathBuf::from("/dev/stdin")]
     };
 
-    let (files, walk_errors) = expand_paths(initial_files);
-
-    Ok((
-        ResolvedArgs {
-            verbose: args.verbose,
-            timing: args.timing,
-            algorithm_code: args.algorithm,
-            search_word,
-            files,
-        },
-        walk_errors,
-    ))
+    Ok(ResolvedArgs {
+        verbose: args.verbose,
+        timing: args.timing,
+        algorithm_code: args.algorithm,
+        search_word,
+        paths,
+    })
 }
 
 #[cfg(test)]
@@ -163,20 +154,18 @@ mod tests {
     #[test]
     fn defaults_to_stdin_when_no_files_given() {
         let args = base_args();
-        let (resolved, walk_errors) = resolve(args).unwrap();
-        assert_eq!(resolved.files, vec![PathBuf::from("/dev/stdin")]);
-        assert!(walk_errors.is_empty(), "no walk errors expected");
+        let resolved = resolve(args).unwrap();
+        assert_eq!(resolved.paths, vec![PathBuf::from("/dev/stdin")]);
     }
 
     #[test]
     fn uses_positional_files_when_given() {
         let mut args = base_args();
         args.files = vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")];
-        let (resolved, walk_errors) = resolve(args).unwrap();
+        let resolved = resolve(args).unwrap();
         assert_eq!(
-            resolved.files,
+            resolved.paths,
             vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]
         );
-        assert!(walk_errors.is_empty(), "no walk errors expected");
     }
 }

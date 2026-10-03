@@ -2,7 +2,7 @@
 
 > _A small, threaded, literal-string grep — built to compare search algorithms, not to replace grep._
 
-`greep` searches files for a **literal string** and prints the lines that contain it. It spawns one thread per input file, reads small files into memory and memory-maps large ones, and lets you swap the underlying substring-search algorithm with a flag. Its distinguishing feature is the built-in timing instrumentation: `-a` picks the algorithm and `-t` reports per-file and aggregate microsecond timings, so you can benchmark brute-force against Boyer-Moore-Horspool on your own files rather than on a synthetic benchmark.
+`greep` searches files for a **literal string** and prints the lines that contain it. It searches files in parallel on a fixed pool of threads, reads small files into memory and memory-maps large ones, and lets you swap the underlying substring-search algorithm with a flag. Its distinguishing feature is the built-in timing instrumentation: `-a` picks the algorithm and `-t` reports per-file and aggregate microsecond timings, so you can benchmark brute-force against Boyer-Moore-Horspool on your own files rather than on a synthetic benchmark.
 
 It is deliberately not a grep replacement. There are no regular expressions, no case-insensitive matching, and **at most one match is reported per line**. If you want grep, use grep; if you want to see how different substring-search algorithms behave on real inputs, that's what this is for.
 
@@ -43,7 +43,7 @@ It is deliberately not a grep replacement. There are no regular expressions, no 
 
 - **Swappable search algorithms** — `-a bf` (brute force) or `-a bmh` (Boyer-Moore-Horspool). Both are held to the same observable behavior by a cross-algorithm parity test, so `-a` is a performance choice, not a semantics choice.
 - **Built-in timing instrumentation** — `-t` emits a per-file `#TIMING` line plus `#COMMAND` and `#TIMING_SUMMARY` lines with min/avg/max microseconds, bytes searched, match counts, and two throughput figures — search-only and wall-clock. Machine-readable, and on stderr so it never pollutes match output.
-- **One thread per file** — files are searched in parallel, but output is emitted in argument order, so results are deterministic regardless of which thread finishes first.
+- **Parallel search, deterministic output** — files are searched on a pool of one thread per CPU core, but output is emitted in argument order, so results are deterministic regardless of which file finishes first. Directory walking overlaps the search: the first file is being searched while the rest of the tree is still being walked.
 - **Size-aware file loading** — files under 1 GiB are read into memory; files at or above 1 GiB are memory-mapped.
 - **Recursive directory search** — pass a directory and it is walked automatically. No `-r` flag needed.
 - **Binary files don't corrupt your terminal** — a file with a NUL byte in its first 8 KiB reports `Binary file X matches` instead of writing raw bytes to stdout, as grep does.
@@ -170,8 +170,8 @@ greep println src/main.rs notes.txt
 src/main.rs:2     println!("hello");
 ```
 
-Each file is searched on its own thread, but output is emitted in the order the
-files were given, not the order the threads finish.
+Files are searched in parallel, but output is emitted in the order the files
+were given, not the order the searches finish.
 
 ### Search a directory tree
 
@@ -227,7 +227,7 @@ The `#TIMING_SUMMARY` fields:
 | `bytes` | Bytes searched, summed over files that succeeded. |
 | `min` / `avg` / `max` | Per-file search time in microseconds. |
 | `algo_mbps` | `bytes` ÷ summed per-file search time. Excludes I/O and excludes parallelism, so it is the figure that compares algorithms. |
-| `wall_mbps` | `bytes` ÷ elapsed run time. What you actually waited for, including loading and every thread at once. |
+| `wall_mbps` | `bytes` ÷ elapsed run time. What you actually waited for, including walking, loading and every thread at once. |
 | `wall_us` | Elapsed run time in microseconds, measured from after argument parsing. |
 
 Both throughput figures use MB = 10⁶ bytes, and both are `0.0` when the run was
@@ -337,15 +337,19 @@ flowchart TD
 
 | Module | Responsibility |
 |--------|----------------|
-| `src/main.rs` | Thread spawn/join, buffered output, timing summary, exit status. |
-| `src/options.rs` | `clap`-derived `Args`, `AppError`, and `resolve()` — validates the algorithm, picks the file source, expands directories. |
-| `src/filelist.rs` | Reading a `-f` manifest and walking directories. |
+| `src/main.rs` | Wiring the walk to the worker pool, buffered output, timing summary, exit status. |
+| `src/pool.rs` | `run_ordered()` — a fixed pool of worker threads that hands results back in job order. |
+| `src/options.rs` | `clap`-derived `Args`, `AppError`, and `resolve()` — validates the algorithm and picks the file source. |
+| `src/filelist.rs` | Reading a `-f` manifest, and `walk()` — a lazy, depth-first directory walk. |
 | `src/loader.rs` | `load()` — reads files under 1 GiB, memory-maps files at or above it. |
 | `src/search/` | The `SearchAlgorithm` trait, the code registry, and the two implementations. |
 
-Threads are joined in spawn order, and each file's matches are written out and
-freed as its thread lands — which is both what makes output deterministic and
-what keeps match text from accumulating across the whole run.
+The pool runs one worker per CPU core, so the thread count does not grow with
+the file count. Results are emitted in walk order, and each file's matches are
+written out and freed as soon as every earlier file is done — which is what
+makes output deterministic. At most two results per worker are ever dispatched
+but not yet emitted, so match text never accumulates across the run, even when
+one slow file holds up the files behind it.
 
 ---
 
@@ -360,7 +364,6 @@ These are current, verified behaviors rather than hypotheticals. Each links to i
 - **A search string containing a newline never matches.** Search is line-scoped and no line contains a newline, so both algorithms agree on this and exit `1`.
 - **Hidden files are always skipped** ([#25](https://github.com/PeteRichardson/greep/issues/25)). Dotfiles and dot-directories are excluded from directory walks, with no opt-out flag.
 - **Symlinks inside a directory are skipped silently** ([#24](https://github.com/PeteRichardson/greep/issues/24)). This matches `grep -r`'s default. Note the asymmetry: a symlink passed *explicitly* as an argument **is** followed — only the directory walk skips them.
-- **Thread count is unbounded** ([#15](https://github.com/PeteRichardson/greep/issues/15)). One thread is spawned per file with no pool or cap. Fine for thousands of small files; the risk case is many concurrently-large files.
 - **A `-f` manifest must be valid UTF-8** ([#39](https://github.com/PeteRichardson/greep/issues/39)). Paths given as arguments or found by the directory walk keep their exact bytes, so non-UTF-8 filenames work. A manifest is read line-by-line as text, so a non-UTF-8 path *inside* one fails the whole read with "stream did not contain valid UTF-8". This is a loud error rather than the silent mangling it replaced.
 - **No CI** ([#32](https://github.com/PeteRichardson/greep/issues/32)). The test suite is not run automatically on push.
 

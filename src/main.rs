@@ -1,15 +1,19 @@
 mod filelist;
 mod loader;
 mod options;
+mod pool;
 mod search;
 
 use std::io::{BufWriter, Write};
+use std::num::NonZeroUsize;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 
-use options::{resolve, Args};
+use filelist::WalkItem;
+use options::{resolve, Args, ResolvedArgs};
 use search::Match;
 
 /// Exit codes follow grep: 0 = matched, 1 = no match, 2 = an error occurred.
@@ -38,12 +42,20 @@ struct PerFileResult {
     error: Option<String>,
 }
 
+/// What one walk item came to by the time it reaches the output.
+enum Outcome {
+    File(PerFileResult),
+    UnreadableDir(String),
+}
+
 /// Running totals over every file, accumulated as each one's matches are printed
 /// and dropped. Holding this instead of the `PerFileResult`s is what lets the
 /// match text be freed per file rather than accumulating until the end.
 #[derive(Default)]
 struct RunTotals {
     files: usize,
+    /// Files that could not be read plus directories the walk could not open,
+    /// so the -t summary's `errors=` agrees with the exit status.
     errors: usize,
     /// Files with at least one match — `files` counts files *searched*, which is
     /// not the same question.
@@ -69,8 +81,8 @@ fn run() -> i32 {
         return EXIT_MATCH;
     }
 
-    let (resolved, walk_errors) = match resolve(args) {
-        Ok((r, walk_errors)) => (r, report_walk_errors(&walk_errors)),
+    let resolved = match resolve(args) {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
             return EXIT_ERROR;
@@ -81,101 +93,105 @@ fn run() -> i32 {
         eprintln!("# Searching for '{}'", resolved.search_word);
     }
 
-    let algorithm_code = resolved.algorithm_code.clone();
-    let timing = resolved.timing;
-    let verbose = resolved.verbose;
-    let search_word = resolved.search_word.clone();
+    let ResolvedArgs {
+        verbose,
+        timing,
+        algorithm_code,
+        search_word,
+        paths,
+    } = resolved;
 
-    // Wall-clock covers the whole run: spawning, loading, searching and writing.
+    // Wall-clock covers the whole run: walking, loading, searching and writing.
     // Taken only when it has a consumer, for the same reason `TimingInfo` is
     // optional. Started here rather than in `main` so it excludes process start
     // and argument parsing, which greep cannot influence.
     let started = timing.then(Instant::now);
-
-    let handles: Vec<_> = resolved
-        .files
-        .into_iter()
-        .enumerate()
-        .map(|(i, filename)| {
-            if verbose {
-                eprintln!("# Processing file {i}: {}", filename.display());
-            }
-            let algorithm_code = algorithm_code.clone();
-            let search_word = search_word.clone();
-            // Kept outside the closure so a panicking worker can still be named.
-            let name = filename.clone();
-            let handle = std::thread::spawn(move || {
-                run_file(&filename, &search_word, &algorithm_code, timing)
-            });
-            (name, handle)
-        })
-        .collect();
 
     // One lock and one buffer for the whole run, rather than a lock and a flush
     // per match.
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
-    let mut totals = RunTotals {
-        timings: Vec::with_capacity(if timing { handles.len() } else { 0 }),
-        // Seeded so the -t summary's `errors=` agrees with the exit status.
-        errors: walk_errors,
-        ..RunTotals::default()
-    };
-    let mut any_error = walk_errors > 0;
+    let mut totals = RunTotals::default();
+    let mut any_error = false;
 
-    // Join in spawn order and emit each file's matches as it lands, so the match
-    // text is freed per file instead of accumulating until every thread is done.
-    // Join order is argument order, which is what makes the output deterministic.
-    for (name, handle) in handles {
-        let result = match handle.join() {
-            Ok(result) => result,
-            Err(payload) => PerFileResult {
-                filename: name,
-                matches: Vec::new(),
-                binary: false,
-                timing: None,
-                error: Some(panic_message(&*payload)),
-            },
-        };
+    let mut file_index = 0;
+    let jobs = filelist::walk(paths).inspect(|item| {
+        if let (true, WalkItem::File(filename)) = (verbose, item) {
+            eprintln!("# Processing file {file_index}: {}", filename.display());
+            file_index += 1;
+        }
+    });
 
-        // Bound once: `Path` has no `Display`, and calling `.display()` at each
-        // use site is what pushed this loop's formatting onto extra lines.
-        let name = result.filename.display();
+    // The thread count is fixed, not one per file: a thread per file has no
+    // upper bound, and `spawn` panics when the OS refuses one more.
+    let workers = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
 
-        if result.binary {
-            // Report that it matched without emitting the bytes themselves.
-            // A file with no match prints nothing at all, as grep does.
+    // The pool hands results back in walk order, which is argument order, so the
+    // output is deterministic. Each file's matches are emitted and dropped as
+    // its result lands, so the match text never accumulates across the run.
+    pool::run_ordered(
+        jobs,
+        workers,
+        |item| match item {
+            WalkItem::File(filename) => {
+                Outcome::File(search_file(filename, &search_word, &algorithm_code, timing))
+            }
+            WalkItem::UnreadableDir(err) => Outcome::UnreadableDir(err),
+        },
+        |outcome| {
+            let result = match outcome {
+                Outcome::File(result) => result,
+                Outcome::UnreadableDir(err) => {
+                    // A directory the walk could not open is an error just like
+                    // a file a worker could not read: reported, counted, and
+                    // exit status 2. It is not a file searched.
+                    let _ = out.flush();
+                    eprintln!("error: {err}");
+                    any_error = true;
+                    totals.errors += 1;
+                    return;
+                }
+            };
+
+            // Bound once: `Path` has no `Display`, and calling `.display()` at
+            // each use site is what pushed this formatting onto extra lines.
+            let name = result.filename.display();
+
+            if result.binary {
+                // Report that it matched without emitting the bytes themselves.
+                // A file with no match prints nothing at all, as grep does.
+                if !result.matches.is_empty() {
+                    let _ = writeln!(out, "Binary file {name} matches");
+                }
+            } else {
+                for m in &result.matches {
+                    let _ = writeln!(out, "{name}:{} {}", m.line_number, m.line);
+                }
+            }
+            totals.files += 1;
             if !result.matches.is_empty() {
-                let _ = writeln!(out, "Binary file {name} matches");
+                totals.files_matched += 1;
+                totals.matches += result.matches.len() as u64;
             }
-        } else {
-            for m in &result.matches {
-                let _ = writeln!(out, "{name}:{} {}", m.line_number, m.line);
+
+            if let Some(err) = &result.error {
+                // Keep stdout and stderr readable relative to each other; this
+                // is once per failing file, not once per match.
+                let _ = out.flush();
+                eprintln!("error: {name}: {err}");
+                any_error = true;
+                totals.errors += 1;
             }
-        }
-        totals.files += 1;
-        if !result.matches.is_empty() {
-            totals.files_matched += 1;
-            totals.matches += result.matches.len() as u64;
-        }
 
-        if let Some(err) = &result.error {
-            // Keep stdout and stderr readable relative to each other; this is
-            // once per failing file, not once per match.
-            let _ = out.flush();
-            eprintln!("error: {name}: {err}");
-            any_error = true;
-            totals.errors += 1;
-        }
-
-        if let Some(info) = result.timing {
-            let _ = out.flush();
-            eprintln!("#TIMING {:8} {name}", info.elapsed.as_micros());
-            totals.timings.push(info);
-        }
-        // `result`, and with it this file's match text, is dropped here.
-    }
+            if let Some(info) = result.timing {
+                let _ = out.flush();
+                eprintln!("#TIMING {:8} {name}", info.elapsed.as_micros());
+                totals.timings.push(info);
+            }
+            // `result`, and with it this file's match text, is dropped here.
+        },
+    );
 
     if let Err(e) = out.flush() {
         eprintln!("error: writing to stdout: {e}");
@@ -195,8 +211,7 @@ fn run() -> i32 {
     }
 }
 
-/// Recover the message from a panicking worker, so one bad file reports why it
-/// failed instead of taking the whole process down with it.
+/// Recover the message from a panicking search.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         format!("worker thread panicked: {s}")
@@ -207,13 +222,33 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+/// Searches one file, turning a panic into that file's error so one bad file
+/// reports why it failed instead of taking the whole run down with it.
+fn search_file(
+    filename: PathBuf,
+    search_word: &str,
+    algorithm_code: &str,
+    timing: bool,
+) -> PerFileResult {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        run_file(&filename, search_word, algorithm_code, timing)
+    }))
+    .unwrap_or_else(|payload| PerFileResult {
+        filename,
+        matches: Vec::new(),
+        binary: false,
+        timing: None,
+        error: Some(panic_message(&*payload)),
+    })
+}
+
 fn run_file(
     filename: &Path,
     search_word: &str,
     algorithm_code: &str,
     timing: bool,
 ) -> PerFileResult {
-    let alg = search::find_algorithm(algorithm_code).expect("algorithm validated before spawn");
+    let alg = search::find_algorithm(algorithm_code).expect("validated in resolve()");
 
     let loaded = match loader::load(filename) {
         Ok(l) => l,
@@ -271,16 +306,6 @@ fn megabytes_per_second(bytes: u64, micros: u128) -> f64 {
         return 0.0;
     }
     bytes as f64 / micros as f64
-}
-
-/// Prints each directory the walk could not open and returns how many there
-/// were. Such a directory is an error just like a file a worker could not
-/// read: reported, counted, and exit status 2.
-fn report_walk_errors(errors: &[String]) -> usize {
-    for err in errors {
-        eprintln!("error: {err}");
-    }
-    errors.len()
 }
 
 fn print_timing_summary(algorithm_code: &str, totals: &RunTotals, wall: Duration) {

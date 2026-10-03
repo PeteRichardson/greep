@@ -61,7 +61,7 @@ fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> PathBuf {
 ///
 /// Blank lines are skipped, `#` comments are ignored, `~` is expanded, and
 /// repeated paths are collapsed to their first occurrence — a duplicated line
-/// otherwise buys a second thread, a second read of the same file, and a second
+/// otherwise buys a second search, a second read of the same file, and a second
 /// copy of every matching line in the output.
 pub fn read_filelist(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     let file = fs::File::open(path)?;
@@ -91,45 +91,99 @@ pub fn read_filelist(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Expands directory arguments into the files they contain.
+/// One step of a walk: a file to search, or a directory that could not be opened.
 ///
-/// Returns the expanded paths plus any directories that could not be opened. A
-/// failed `read_dir` used to print an error and vanish: it happened on the main
-/// thread before any worker existed, so it never reached the per-file error
-/// channel and the run exited 1 (no match) rather than 2 (error). The errors
-/// come back as strings for the caller to report and count.
-pub fn expand_paths(paths: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<String>) {
-    let mut out = Vec::new();
-    let mut errors = Vec::new();
-    for path in paths {
-        match fs::metadata(&path) {
-            Ok(meta) if meta.is_dir() => walk_directory(&path, &mut out, &mut errors),
-            _ => out.push(path),
-        }
-    }
-    (out, errors)
+/// A failed `read_dir` used to print an error and vanish: it happened on the
+/// main thread before any worker existed, so it never reached the per-file error
+/// channel and the run exited 1 (no match) rather than 2 (error). Carrying it in
+/// the walk's own output puts it in sequence with the files around it, for the
+/// caller to report and count.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WalkItem {
+    File(PathBuf),
+    UnreadableDir(String),
 }
 
-fn walk_directory(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        // One entry per failed directory, so a run's error count and exit
-        // status see it. The search proceeds with what *could* be opened.
-        errors.push(format!("unable to open directory '{}'", dir.display()));
-        return;
-    };
+/// Expands directory arguments into the files they contain, lazily.
+///
+/// A path that is not a directory, including one that does not exist, is yielded
+/// as given; opening it is the worker's job, and so is reporting its error.
+///
+/// Lazy so that the search can start on the first file while the rest of the tree
+/// is still being walked. Walking everything up front was a serial prelude
+/// before any worker began.
+pub fn walk(paths: Vec<PathBuf>) -> Walk {
+    Walk {
+        args: paths.into_iter(),
+        open_dirs: Vec::new(),
+    }
+}
 
-    for entry in entries.flatten() {
-        // Tested on the raw bytes rather than through `to_string_lossy`, so a
-        // name that is not valid UTF-8 is classified on what it actually starts
-        // with instead of on a decoded copy of itself.
-        if entry.file_name().as_encoded_bytes().starts_with(b".") {
-            continue;
+pub struct Walk {
+    args: std::vec::IntoIter<PathBuf>,
+    /// The directories being read, innermost last. Finishing the innermost one
+    /// before resuming its parent gives the same depth-first, `read_dir` order a
+    /// recursive walk does.
+    open_dirs: Vec<fs::ReadDir>,
+}
+
+impl Walk {
+    /// Starts reading `dir`, or reports that it cannot be read.
+    fn enter(&mut self, dir: &Path) -> Option<WalkItem> {
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                self.open_dirs.push(entries);
+                None
+            }
+            // One item per failed directory, so a run's error count and exit
+            // status see it. The search proceeds with what *could* be opened.
+            Err(_) => Some(WalkItem::UnreadableDir(format!(
+                "unable to open directory '{}'",
+                dir.display()
+            ))),
         }
-        let child: PathBuf = entry.path();
-        match entry.file_type() {
-            Ok(ft) if ft.is_dir() => walk_directory(&child, out, errors),
-            Ok(ft) if ft.is_file() => out.push(child),
-            _ => {}
+    }
+}
+
+impl Iterator for Walk {
+    type Item = WalkItem;
+
+    fn next(&mut self) -> Option<WalkItem> {
+        loop {
+            if let Some(entries) = self.open_dirs.last_mut() {
+                let Some(entry) = entries.next() else {
+                    self.open_dirs.pop();
+                    continue;
+                };
+                let Ok(entry) = entry else { continue };
+                // Tested on the raw bytes rather than through `to_string_lossy`,
+                // so a name that is not valid UTF-8 is classified on what it
+                // actually starts with instead of on a decoded copy of itself.
+                if entry.file_name().as_encoded_bytes().starts_with(b".") {
+                    continue;
+                }
+                let child = entry.path();
+                match entry.file_type() {
+                    Ok(ft) if ft.is_dir() => {
+                        if let Some(err) = self.enter(&child) {
+                            return Some(err);
+                        }
+                    }
+                    Ok(ft) if ft.is_file() => return Some(WalkItem::File(child)),
+                    _ => {}
+                }
+                continue;
+            }
+
+            let path = self.args.next()?;
+            match fs::metadata(&path) {
+                Ok(meta) if meta.is_dir() => {
+                    if let Some(err) = self.enter(&path) {
+                        return Some(err);
+                    }
+                }
+                _ => return Some(WalkItem::File(path)),
+            }
         }
     }
 }
@@ -296,6 +350,71 @@ mod tests {
                 PathBuf::from(path)
             );
         }
+    }
+
+    /// Runs a whole walk and splits it into its files and its errors, which is
+    /// the shape most of these tests want to assert on.
+    fn expand_paths(paths: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<String>) {
+        let mut files = Vec::new();
+        let mut errors = Vec::new();
+        for item in walk(paths) {
+            match item {
+                WalkItem::File(f) => files.push(f),
+                WalkItem::UnreadableDir(e) => errors.push(e),
+            }
+        }
+        (files, errors)
+    }
+
+    /// Argument order is output order, so a directory's files must come out
+    /// between the arguments either side of it, not before or after them all.
+    #[test]
+    fn walk_keeps_each_directory_in_its_argument_position() {
+        let tmp = fixture();
+        let dir = tmp.path();
+        fs::create_dir(dir.join("middle")).unwrap();
+        fs::write(dir.join("middle").join("m.txt"), b"m").unwrap();
+        let first = dir.join("z-first.txt");
+        let last = dir.join("a-last.txt");
+
+        let items: Vec<_> = walk(vec![first.clone(), dir.join("middle"), last.clone()]).collect();
+        assert_eq!(
+            items,
+            vec![
+                WalkItem::File(first),
+                WalkItem::File(dir.join("middle").join("m.txt")),
+                WalkItem::File(last),
+            ]
+        );
+    }
+
+    /// A nested directory is finished before its parent's later entries, as in
+    /// a recursive walk. The parent here holds only the one subdirectory and one
+    /// file, so either `read_dir` order gives a sequence this can check.
+    #[test]
+    fn walk_is_depth_first() {
+        let tmp = fixture();
+        let dir = tmp.path();
+        fs::create_dir_all(dir.join("sub").join("deeper")).unwrap();
+        fs::write(dir.join("sub").join("deeper").join("d.txt"), b"d").unwrap();
+        fs::write(dir.join("sub").join("s.txt"), b"s").unwrap();
+        fs::write(dir.join("top.txt"), b"t").unwrap();
+
+        let (files, errors) = expand_paths(vec![dir.to_path_buf()]);
+        assert!(errors.is_empty(), "no walk errors expected");
+        let top = files.iter().position(|f| f.ends_with("top.txt")).unwrap();
+        let sub: Vec<usize> = files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.starts_with(dir.join("sub")))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(files.len(), 3);
+        assert_eq!(sub.len(), 2);
+        // The two files under `sub` are adjacent: nothing from the parent
+        // interrupts the subtree.
+        assert_eq!(sub[1], sub[0] + 1);
+        assert!(top < sub[0] || top > sub[1]);
     }
 
     #[test]
