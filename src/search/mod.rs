@@ -10,16 +10,18 @@ pub struct Match {
     pub line: String,
 }
 
-pub trait SearchAlgorithm {
+/// `Sync` so that one shared instance can serve every worker thread; `Debug`
+/// so that `ResolvedArgs`, which holds one, can derive it.
+pub trait SearchAlgorithm: std::fmt::Debug + Sync {
     fn search(&self, word: &str, buf: &[u8]) -> Vec<Match>;
 }
 
 const ALGORITHMS: &[(&str, &str)] = &[("bf", "brute force"), ("bmh", "boyer-moore-horspool")];
 
-pub fn find_algorithm(code: &str) -> Option<Box<dyn SearchAlgorithm>> {
+pub fn find_algorithm(code: &str) -> Option<&'static dyn SearchAlgorithm> {
     match code {
-        "bf" => Some(Box::new(Bf)),
-        "bmh" => Some(Box::new(Bmh)),
+        "bf" => Some(&Bf),
+        "bmh" => Some(&Bmh),
         _ => None,
     }
 }

@@ -1,5 +1,6 @@
 use super::{Match, SearchAlgorithm};
 
+#[derive(Debug)]
 pub struct Bmh;
 
 impl SearchAlgorithm for Bmh {

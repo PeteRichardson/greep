@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use crate::filelist::read_filelist;
-use crate::search::{find_algorithm, list_algorithms};
+use crate::search::{find_algorithm, list_algorithms, SearchAlgorithm};
 
 /// Appended to `--help`. The directory walk's skipping rules cannot be inferred
 /// from the flag list, and leaving them undocumented was the defect in the
@@ -61,6 +61,9 @@ pub struct ResolvedArgs {
     pub verbose: bool,
     pub timing: bool,
     pub algorithm_code: String,
+    /// The algorithm `algorithm_code` names, looked up once here so that no
+    /// worker can meet an unknown code.
+    pub algorithm: &'static dyn SearchAlgorithm,
     pub search_word: String,
     /// The paths to search, as given. Directories are not yet expanded: the walk
     /// runs alongside the search, so that it is not a serial prelude to it.
@@ -85,9 +88,9 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
         return Err(AppError::EmptySearchWord);
     }
 
-    if find_algorithm(&args.algorithm).is_none() {
+    let Some(algorithm) = find_algorithm(&args.algorithm) else {
         return Err(AppError::UnknownAlgorithm(args.algorithm));
-    }
+    };
 
     if args.filelist.is_some() && !args.files.is_empty() {
         return Err(AppError::ConflictingFileArgs);
@@ -105,6 +108,7 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
         verbose: args.verbose,
         timing: args.timing,
         algorithm_code: args.algorithm,
+        algorithm,
         search_word,
         paths,
     })
@@ -113,6 +117,7 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::Match;
 
     fn base_args() -> Args {
         Args {
@@ -140,6 +145,24 @@ mod tests {
         args.algorithm = "nope".to_string();
         let err = resolve(args).unwrap_err();
         assert!(matches!(err, AppError::UnknownAlgorithm(code) if code == "nope"));
+    }
+
+    #[test]
+    fn resolves_every_listed_algorithm_to_one_that_searches() {
+        for (code, _) in list_algorithms() {
+            let mut args = base_args();
+            args.algorithm = code.to_string();
+            let resolved = resolve(args).unwrap();
+            let matches = resolved.algorithm.search("word", b"no\na word here\n");
+            assert_eq!(
+                matches,
+                vec![Match {
+                    line_number: 2,
+                    line: "a word here".to_string(),
+                }],
+                "algorithm {code}"
+            );
+        }
     }
 
     #[test]

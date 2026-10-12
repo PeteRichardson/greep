@@ -14,7 +14,7 @@ use clap::Parser;
 
 use filelist::WalkItem;
 use options::{resolve, Args, ResolvedArgs};
-use search::Match;
+use search::{Match, SearchAlgorithm};
 
 /// Exit codes follow grep: 0 = matched, 1 = no match, 2 = an error occurred.
 /// An error outranks a match, so a run that both matched and failed reports 2.
@@ -97,6 +97,7 @@ fn run() -> i32 {
         verbose,
         timing,
         algorithm_code,
+        algorithm,
         search_word,
         paths,
     } = resolved;
@@ -135,7 +136,7 @@ fn run() -> i32 {
         workers,
         |item| match item {
             WalkItem::File(filename) => {
-                Outcome::File(search_file(filename, &search_word, &algorithm_code, timing))
+                Outcome::File(search_file(filename, &search_word, algorithm, timing))
             }
             WalkItem::Error(err) => Outcome::WalkError(err),
         },
@@ -227,11 +228,11 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 fn search_file(
     filename: PathBuf,
     search_word: &str,
-    algorithm_code: &str,
+    algorithm: &dyn SearchAlgorithm,
     timing: bool,
 ) -> PerFileResult {
     panic::catch_unwind(AssertUnwindSafe(|| {
-        run_file(&filename, search_word, algorithm_code, timing)
+        run_file(&filename, search_word, algorithm, timing)
     }))
     .unwrap_or_else(|payload| PerFileResult {
         filename,
@@ -245,11 +246,9 @@ fn search_file(
 fn run_file(
     filename: &Path,
     search_word: &str,
-    algorithm_code: &str,
+    algorithm: &dyn SearchAlgorithm,
     timing: bool,
 ) -> PerFileResult {
-    let alg = search::find_algorithm(algorithm_code).expect("validated in resolve()");
-
     let loaded = match loader::load(filename) {
         Ok(l) => l,
         Err(e) => {
@@ -271,11 +270,11 @@ fn run_file(
     let (matches, timing) = if timing {
         let bytes = loaded.as_bytes().len() as u64;
         let start = Instant::now();
-        let matches = alg.search(search_word, loaded.as_bytes());
+        let matches = algorithm.search(search_word, loaded.as_bytes());
         let elapsed = start.elapsed();
         (matches, Some(TimingInfo { bytes, elapsed }))
     } else {
-        (alg.search(search_word, loaded.as_bytes()), None)
+        (algorithm.search(search_word, loaded.as_bytes()), None)
     };
 
     PerFileResult {
