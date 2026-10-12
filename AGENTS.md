@@ -36,9 +36,11 @@ When a change alters observable behavior, update the README, not this file.
 - `src/options.rs` — `clap`-derived `Args`, `AppError`, and `resolve()` which
   validates the algorithm code and resolves the paths to search (filelist vs.
   positional vs. default stdin). Directories are not expanded here.
-- `src/filelist.rs` — `read_filelist`, `walk` (lazy depth-first directory walk,
+- `src/filelist.rs` — `read_filelist` (parses a manifest; reports skipped
+  comment lines, keeps repeats), `walk` (lazy depth-first directory walk,
   skipping dotfiles/dotdirs; anything it cannot read is a `WalkItem::Error`
-  in sequence).
+  in sequence). `walk` is where every path source meets, so it is the one place
+  that drops a file already yielded, keyed on its canonical path.
 - `src/loader.rs` — `load()`: reads files under 1GB into memory, memory-maps
   files at or above 1GB via `memmap2`.
 - `src/search/` — `SearchAlgorithm` trait + registry (`find_algorithm`,

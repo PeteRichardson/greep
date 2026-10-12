@@ -131,7 +131,7 @@ Usage: greep [OPTIONS] [STRING] [FILES]...
 | Flag | Description |
 |------|-------------|
 | `-a`, `--algorithm <ALGORITHM>` | Search algorithm code. One algorithm is used for the whole run. [default: `bf`] |
-| `-f`, `--filelist <FILELIST>` | Read the file list from a file, one path per line. `#` comments and blank lines are skipped, a leading `~` expands, and repeats are collapsed — see [Search a list of files from a manifest](#search-a-list-of-files-from-a-manifest). Cannot be combined with positional `FILES`. |
+| `-f`, `--filelist <FILELIST>` | Read the file list from a file, one path per line. `#` comments and blank lines are skipped, a leading `~` expands, and each file is searched once — see [Search a list of files from a manifest](#search-a-list-of-files-from-a-manifest). Cannot be combined with positional `FILES`. |
 | `-l`, `--list` | Print the available algorithm codes and exit. |
 | `-t`, `--timing` | Print per-file `#TIMING` lines to stderr, then `#COMMAND` and `#TIMING_SUMMARY`. Independent of `-v`. |
 | `-v`, `--verbose` | Print progress to stderr as files are processed. Independent of `-t`. |
@@ -172,6 +172,13 @@ src/main.rs:2     println!("hello");
 
 Files are searched in parallel, but output is emitted in the order the files
 were given, not the order the searches finish.
+
+**Each file is searched once**, however many times it is named. `greep needle
+a.txt ./a.txt`, or a directory together with a file inside it, prints each
+match once. Two names are the same file when they resolve to the same real path,
+so a symlink to a file counts as that file. The name printed is the first one
+given. A path that does not exist is compared as written, and still reported as
+an error.
 
 ### Search a directory tree
 
@@ -263,6 +270,13 @@ notes.txt:1 A needle in a haystack
 notes.txt:3 needle needle needle
 ```
 
+With `-f`, `-v` also names each manifest line skipped as a comment, so a line
+such as `#draft.txt` cannot quietly drop a file from the search:
+
+```
+# Skipping comment on line 4 of 'files.txt': #draft.txt
+```
+
 ### Search a list of files from a manifest
 
 ```sh
@@ -287,13 +301,14 @@ The rules, and their edges:
 - **A line whose first non-blank character is `#` is a comment.** Only whole
   lines — a trailing `#` is *not* stripped, because `#` is legal in a filename
   and `notes#2.txt` has to stay openable. To list a file whose name really does
-  begin with `#`, write it as `./#name`.
+  begin with `#`, write it as `./#name`. `-v` names each comment line skipped.
 - **A leading `~` or `~/` expands to `$HOME`.** Nothing else would expand it: a
   manifest is read by greep, not by your shell. `~user` is not supported and is
   left alone, as is a `~` anywhere but the start.
-- **Repeated paths are collapsed to their first occurrence**, so the surviving
-  order is first-seen. Deduplication happens after `~` expansion, so `~/a.txt`
-  and `$HOME/a.txt` count as the same file.
+- **Each file is searched once**, as for [positional
+  arguments](#search-several-files-at-once): a repeated line, two spellings of
+  one file (`~/a.txt` and `$HOME/a.txt`, `a.txt` and `./a.txt`), or a directory
+  listed with a file inside it. The surviving order is first-seen.
 - **Leading whitespace is not stripped from a path**, since it is legal in a
   filename. Indent comments freely; don't indent paths.
 

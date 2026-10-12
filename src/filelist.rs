@@ -14,18 +14,10 @@ use std::path::{Path, PathBuf};
 /// passwd lookup, and a path beginning `~someone` is far more likely to be a real
 /// relative path than an unsupported shorthand. Only a bare `~` or a `~/` prefix
 /// is treated as the shorthand.
-fn expand_tilde(path: &str) -> PathBuf {
-    // `var_os`, not `var`: `$HOME` names a path, and a path is not required to be
-    // UTF-8. `var` reports a non-UTF-8 home as absent and would silently stop
-    // expanding for a user who has one.
-    expand_tilde_against(path, std::env::var_os("HOME").as_deref())
-}
-
-/// The body of [`expand_tilde`], with `$HOME` passed in.
 ///
-/// Taking the home directory as an argument keeps the separator and
-/// missing-`$HOME` rules testable without mutating the environment, which is
-/// process-global and races the other tests in this module.
+/// Takes the home directory as an argument, so the separator and missing-`$HOME`
+/// rules are testable without mutating the environment, which is process-global
+/// and races the other tests in this module.
 fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> PathBuf {
     let rest = if path == "~" {
         ""
@@ -59,17 +51,43 @@ fn expand_tilde_against(path: &str, home: Option<&OsStr>) -> PathBuf {
 
 /// Reads a manifest of paths, one per line.
 ///
-/// Blank lines are skipped, `#` comments are ignored, `~` is expanded, and
-/// repeated paths are collapsed to their first occurrence — a duplicated line
-/// otherwise buys a second search, a second read of the same file, and a second
-/// copy of every matching line in the output.
-pub fn read_filelist(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+/// Blank lines are skipped, `#` comments are ignored, and `~` is expanded.
+/// Repeated paths are kept: [`walk`] collapses them, together with repeats from
+/// every other source of paths.
+pub fn read_filelist(path: &Path) -> std::io::Result<Filelist> {
     let file = fs::File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
+    // `var_os`, not `var`: `$HOME` names a path, and a path is not required to be
+    // UTF-8. `var` reports a non-UTF-8 home as absent and would silently stop
+    // expanding for a user who has one.
+    parse_filelist(BufReader::new(file), std::env::var_os("HOME").as_deref())
+}
 
-    for line in reader.lines() {
+/// A parsed manifest: the paths it lists, and the comment lines it skipped.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Filelist {
+    pub paths: Vec<PathBuf>,
+    /// Reported under `-v` (#55). A line such as `#draft.txt` is a comment, so a
+    /// manifest that lists one searches one file fewer than it appears to; saying
+    /// so is the only way the user can tell.
+    pub comments: Vec<Comment>,
+}
+
+/// One skipped comment line of a manifest.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Comment {
+    /// 1-based, counting blank lines, so it matches what an editor shows.
+    pub line: usize,
+    /// The line from its `#` on.
+    pub text: String,
+}
+
+/// The body of [`read_filelist`], with the manifest's contents and `$HOME`
+/// passed in, so its tests depend on neither the filesystem nor the environment.
+fn parse_filelist(reader: impl BufRead, home: Option<&OsStr>) -> std::io::Result<Filelist> {
+    let mut paths = Vec::new();
+    let mut comments = Vec::new();
+
+    for (index, line) in reader.lines().enumerate() {
         let line = line?;
         let trimmed = line.trim_end_matches(['\r', '\n']);
 
@@ -77,18 +95,23 @@ pub fn read_filelist(path: &Path) -> std::io::Result<Vec<PathBuf>> {
         // whole line — a trailing `# ...` is not stripped, because `#` is a legal
         // character in a filename and `notes#2.txt` must stay openable. A file
         // whose name genuinely starts with `#` can still be listed as `./#name`.
-        if trimmed.is_empty() || trimmed.trim_start().starts_with('#') {
+        if trimmed.is_empty() {
+            continue;
+        }
+        let unindented = trimmed.trim_start();
+        if unindented.starts_with('#') {
+            comments.push(Comment {
+                line: index + 1,
+                text: unindented.to_string(),
+            });
             continue;
         }
 
         // Leading whitespace is *not* stripped from a path: it is legal in a
         // filename, and this function has no way to tell alignment from content.
-        let expanded = expand_tilde(trimmed);
-        if seen.insert(expanded.clone()) {
-            out.push(expanded);
-        }
+        paths.push(expand_tilde_against(trimmed, home));
     }
-    Ok(out)
+    Ok(Filelist { paths, comments })
 }
 
 /// One step of a walk: a file to search, or something the walk could not read.
@@ -166,10 +189,16 @@ fn classify_entry(dir: &Path, entry: io::Result<fs::DirEntry>) -> Step {
 /// Lazy so that the search can start on the first file while the rest of the tree
 /// is still being walked. Walking everything up front was a serial prelude
 /// before any worker began.
+///
+/// Each file is yielded once, however many times it is named (#54). This is the
+/// one place where every source of paths meets — manifest lines, positional
+/// arguments, and the contents of directories — so a duplicate from any of them,
+/// or across them, is caught here.
 pub fn walk(paths: Vec<PathBuf>) -> Walk {
     Walk {
         args: paths.into_iter(),
         open_dirs: Vec::new(),
+        seen: HashSet::new(),
     }
 }
 
@@ -179,9 +208,23 @@ pub struct Walk {
     /// before resuming its parent gives the same depth-first, `read_dir` order a
     /// recursive walk does. Each keeps its path, to name it in an error.
     open_dirs: Vec<(PathBuf, fs::ReadDir)>,
+    /// The canonical path of every file yielded so far.
+    seen: HashSet<PathBuf>,
 }
 
 impl Walk {
+    /// Whether `path` names a file not yet yielded, recording it if so.
+    ///
+    /// Compared on the canonical path, so `a.txt`, `./a.txt` and a symlink to it
+    /// are one file. One syscall per file is far cheaper than a second search.
+    /// A path that cannot be canonicalized, such as one that does not exist, is
+    /// compared as written: it must still reach the worker, which reports why it
+    /// cannot be opened.
+    fn first_sighting(&mut self, path: &Path) -> bool {
+        let key = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.seen.insert(key)
+    }
+
     /// Starts reading `dir`, or reports that it cannot be read.
     fn enter(&mut self, dir: &Path) -> Option<WalkItem> {
         match fs::read_dir(dir) {
@@ -217,7 +260,12 @@ impl Iterator for Walk {
                             return Some(err);
                         }
                     }
-                    Step::Yield(item) => return Some(item),
+                    Step::Yield(WalkItem::File(file)) => {
+                        if self.first_sighting(&file) {
+                            return Some(WalkItem::File(file));
+                        }
+                    }
+                    Step::Yield(err) => return Some(err),
                     Step::Skip => {}
                 }
                 continue;
@@ -230,7 +278,11 @@ impl Iterator for Walk {
                         return Some(err);
                     }
                 }
-                _ => return Some(WalkItem::File(path)),
+                _ => {
+                    if self.first_sighting(&path) {
+                        return Some(WalkItem::File(path));
+                    }
+                }
             }
         }
     }
@@ -255,7 +307,7 @@ mod tests {
         let dir = fixture();
         let path = dir.path().join(name);
         fs::write(&path, contents).unwrap();
-        read_filelist(&path).unwrap()
+        read_filelist(&path).unwrap().paths
     }
 
     #[test]
@@ -268,25 +320,10 @@ mod tests {
             writeln!(f).unwrap();
             writeln!(f, "second.txt\r").unwrap();
         }
-        let result = read_filelist(&path).unwrap();
+        let result = read_filelist(&path).unwrap().paths;
         assert_eq!(
             result,
             vec![PathBuf::from("first.txt"), PathBuf::from("second.txt")]
-        );
-    }
-
-    #[test]
-    fn read_filelist_dedupes_preserving_first_occurrence_order() {
-        // Order is first-seen, not sorted and not last-seen: "b" stays ahead of
-        // "c" because its first mention was.
-        let result = read_manifest("dupes.txt", "b.txt\nc.txt\nb.txt\na.txt\nc.txt\nb.txt\n");
-        assert_eq!(
-            result,
-            vec![
-                PathBuf::from("b.txt"),
-                PathBuf::from("c.txt"),
-                PathBuf::from("a.txt")
-            ]
         );
     }
 
@@ -299,6 +336,32 @@ mod tests {
         assert_eq!(
             result,
             vec![PathBuf::from("first.txt"), PathBuf::from("second.txt")]
+        );
+    }
+
+    /// #55: a skipped comment is reported, so `-v` can say that a line such as
+    /// `#draft.txt` was not searched. Line numbers count every line, blank ones
+    /// too, so they match what an editor shows.
+    #[test]
+    fn read_filelist_reports_each_comment_line_it_skips() {
+        let list =
+            parse_filelist("a.txt\n# a note\n\nb.txt\n   #draft.txt\n".as_bytes(), None).unwrap();
+        assert_eq!(
+            list.paths,
+            vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]
+        );
+        assert_eq!(
+            list.comments,
+            vec![
+                Comment {
+                    line: 2,
+                    text: "# a note".to_string()
+                },
+                Comment {
+                    line: 5,
+                    text: "#draft.txt".to_string()
+                },
+            ]
         );
     }
 
@@ -316,16 +379,33 @@ mod tests {
         );
     }
 
+    /// Parses `contents` as a manifest against the `$HOME` given, never the
+    /// ambient one: a test that reads the environment fails on its shape (a
+    /// trailing slash) or its absence, not on the code (#56).
+    fn parse(contents: &str, home: Option<&str>) -> Vec<PathBuf> {
+        parse_filelist(contents.as_bytes(), home.map(OsStr::new))
+            .unwrap()
+            .paths
+    }
+
     #[test]
     fn read_filelist_expands_a_leading_tilde() {
-        let home = std::env::var("HOME").expect("HOME is set");
-        let result = read_manifest("tilde.txt", "~/notes.txt\n~\n");
+        let result = parse("~/notes.txt\n~\n", Some("/home/pete"));
         assert_eq!(
             result,
             vec![
-                PathBuf::from(format!("{home}/notes.txt")),
-                PathBuf::from(home)
+                PathBuf::from("/home/pete/notes.txt"),
+                PathBuf::from("/home/pete")
             ]
+        );
+    }
+
+    #[test]
+    fn read_filelist_leaves_tildes_unexpanded_when_home_is_unset() {
+        let result = parse("~/notes.txt\n~\n", None);
+        assert_eq!(
+            result,
+            vec![PathBuf::from("~/notes.txt"), PathBuf::from("~")]
         );
     }
 
@@ -342,15 +422,6 @@ mod tests {
                 PathBuf::from("./~odd")
             ]
         );
-    }
-
-    #[test]
-    fn read_filelist_dedupes_after_tilde_expansion() {
-        // `~/x` and `$HOME/x` are the same file, so they must collapse. Deduping
-        // before expansion would leave both.
-        let home = std::env::var("HOME").expect("HOME is set");
-        let result = read_manifest("tilde3.txt", &format!("~/notes.txt\n{home}/notes.txt\n"));
-        assert_eq!(result, vec![PathBuf::from(format!("{home}/notes.txt"))]);
     }
 
     /// `$HOME` written with a trailing separator must expand identically to one
@@ -434,6 +505,68 @@ mod tests {
                 WalkItem::File(last),
             ]
         );
+    }
+
+    /// #54, steps 1 and 2: a file named twice, or named beside the directory
+    /// that holds it, is searched once.
+    #[test]
+    fn walk_yields_each_file_once_across_args_and_directories() {
+        let tmp = fixture();
+        let dir = tmp.path().join("dt");
+        fs::create_dir(&dir).unwrap();
+        let a = dir.join("a.txt");
+        fs::write(&a, b"needle here\n").unwrap();
+
+        let (files, errors) = expand_paths(vec![dir.clone(), a.clone(), a.clone()]);
+        assert!(errors.is_empty(), "no walk errors expected");
+        assert_eq!(files, vec![a]);
+    }
+
+    /// #54, step 4: two spellings of one file are one file. The spelling kept is
+    /// the first one given, so the output names the path the user typed, not
+    /// the canonical one used to compare them.
+    #[test]
+    fn walk_collapses_two_spellings_of_one_file_keeping_the_first() {
+        let tmp = fixture();
+        let dir = tmp.path().join("dt");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("a.txt"), b"needle here\n").unwrap();
+        let typed = dir.join(".").join("a.txt");
+        let other = tmp.path().join("dt").join("..").join("dt").join("a.txt");
+
+        let (files, errors) = expand_paths(vec![typed.clone(), other, dir.join("a.txt")]);
+        assert!(errors.is_empty(), "no walk errors expected");
+        assert_eq!(files, vec![typed]);
+    }
+
+    #[test]
+    fn walk_dedupes_preserving_first_occurrence_order() {
+        // Order is first-seen, not sorted and not last-seen: "b" stays ahead of
+        // "c" because its first mention was.
+        let paths = ["b.txt", "c.txt", "b.txt", "a.txt", "c.txt", "b.txt"];
+        let (files, _) = expand_paths(paths.iter().map(PathBuf::from).collect());
+        assert_eq!(
+            files,
+            vec![
+                PathBuf::from("b.txt"),
+                PathBuf::from("c.txt"),
+                PathBuf::from("a.txt")
+            ]
+        );
+    }
+
+    /// A path that does not exist has no canonical form. It is still yielded, so
+    /// the worker can report it, and is compared as written.
+    #[test]
+    fn walk_still_yields_a_missing_path_once() {
+        let tmp = fixture();
+        let missing = tmp.path().join("nope.txt");
+        let (files, errors) = expand_paths(vec![missing.clone(), missing.clone()]);
+        assert!(
+            errors.is_empty(),
+            "opening is the worker's job, not the walk's"
+        );
+        assert_eq!(files, vec![missing]);
     }
 
     /// A nested directory is finished before its parent's later entries, as in

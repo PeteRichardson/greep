@@ -79,6 +79,51 @@ fn filelist_duplicates_produce_one_result_not_one_per_line() {
         .stdout(expected);
 }
 
+/// The #54 fixture: `dt/a.txt` holds one match. Relative paths, as the issue's
+/// reproduction typed them, so the command runs inside the fixture.
+fn dedupe_fixture() -> TempDir {
+    let dir = fixture();
+    fs::create_dir(dir.path().join("dt")).unwrap();
+    fs::write(dir.path().join("dt").join("a.txt"), "needle here\n").unwrap();
+    dir
+}
+
+/// #54, steps 1 and 2: a directory beside a file inside it, and a file named
+/// twice, each search the file once.
+#[test]
+fn positional_duplicates_produce_one_result() {
+    let dir = dedupe_fixture();
+    for args in [["dt", "dt/a.txt"], ["dt/a.txt", "dt/a.txt"]] {
+        greep()
+            .current_dir(dir.path())
+            .arg("needle")
+            .args(args)
+            .assert()
+            .code(0)
+            .stdout("dt/a.txt:1 needle here\n");
+    }
+}
+
+/// #54, steps 3 and 4: in a manifest, a directory beside a file inside it, and
+/// two spellings of one file, each search the file once. The name printed is
+/// the first one given, not the canonical path used to compare them.
+#[test]
+fn filelist_entries_naming_one_file_produce_one_result() {
+    let dir = dedupe_fixture();
+    for (manifest, shown) in [
+        ("dt\ndt/a.txt\n", "dt/a.txt"),
+        ("./dt/a.txt\ndt/a.txt\n", "./dt/a.txt"),
+    ] {
+        fs::write(dir.path().join("list"), manifest).unwrap();
+        greep()
+            .current_dir(dir.path())
+            .args(["-f", "list", "needle"])
+            .assert()
+            .code(0)
+            .stdout(format!("{shown}:1 needle here\n"));
+    }
+}
+
 #[test]
 fn filelist_comments_and_blank_lines_are_ignored() {
     let dir = tempfile::tempdir().unwrap();
@@ -100,6 +145,32 @@ fn filelist_comments_and_blank_lines_are_ignored() {
         .assert()
         .code(0)
         .stdout(format!("{}:1 needle here\n", target.display()));
+}
+
+/// #55: a manifest line such as `#draft.txt` is a comment, so its file is not
+/// searched. `-v` says so, naming the line and its text; without `-v` the
+/// default output stays as it was.
+#[test]
+fn verbose_reports_each_skipped_manifest_comment() {
+    let dir = dedupe_fixture();
+    fs::write(dir.path().join("list"), "dt/a.txt\n#draft.txt\n").unwrap();
+
+    greep()
+        .current_dir(dir.path())
+        .args(["-v", "-f", "list", "needle"])
+        .assert()
+        .code(0)
+        .stdout("dt/a.txt:1 needle here\n")
+        .stderr(predicates::str::contains(
+            "# Skipping comment on line 2 of 'list': #draft.txt\n",
+        ));
+
+    greep()
+        .current_dir(dir.path())
+        .args(["-f", "list", "needle"])
+        .assert()
+        .code(0)
+        .stderr("");
 }
 
 #[test]

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::filelist::read_filelist;
+use crate::filelist::{read_filelist, Comment};
 use crate::search::{find_algorithm, list_algorithms, SearchAlgorithm};
 
 /// Appended to `--help`. The directory walk's skipping rules cannot be inferred
@@ -68,6 +68,10 @@ pub struct ResolvedArgs {
     /// The paths to search, as given. Directories are not yet expanded: the walk
     /// runs alongside the search, so that it is not a serial prelude to it.
     pub paths: Vec<PathBuf>,
+    /// The manifest given with `-f`, if any, and the comment lines it skipped,
+    /// for `-v` to report.
+    pub filelist: Option<PathBuf>,
+    pub skipped_comments: Vec<Comment>,
 }
 
 pub fn print_algorithm_list() {
@@ -96,8 +100,11 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
         return Err(AppError::ConflictingFileArgs);
     }
 
+    let mut skipped_comments = Vec::new();
     let paths = if let Some(path) = &args.filelist {
-        read_filelist(path).map_err(|e| AppError::FilelistOpen(path.clone(), e))?
+        let list = read_filelist(path).map_err(|e| AppError::FilelistOpen(path.clone(), e))?;
+        skipped_comments = list.comments;
+        list.paths
     } else if !args.files.is_empty() {
         args.files
     } else {
@@ -111,6 +118,8 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
         algorithm,
         search_word,
         paths,
+        filelist: args.filelist,
+        skipped_comments,
     })
 }
 

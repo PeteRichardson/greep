@@ -90,7 +90,7 @@ fn run() -> i32 {
     };
 
     if resolved.verbose {
-        eprintln!("# Searching for '{}'", resolved.search_word);
+        print_verbose_preamble(&resolved);
     }
 
     let ResolvedArgs {
@@ -100,6 +100,7 @@ fn run() -> i32 {
         algorithm,
         search_word,
         paths,
+        ..
     } = resolved;
 
     // Wall-clock covers the whole run: walking, loading, searching and writing.
@@ -220,6 +221,23 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         format!("worker thread panicked: {s}")
     } else {
         "worker thread panicked".to_string()
+    }
+}
+
+/// The `-v` lines that come before any file: what is searched for, and each
+/// manifest comment skipped (#55), since a skipped `#draft.txt` line is
+/// otherwise visible only as a missing result.
+fn print_verbose_preamble(resolved: &ResolvedArgs) {
+    eprintln!("# Searching for '{}'", resolved.search_word);
+    if let Some(filelist) = &resolved.filelist {
+        for comment in &resolved.skipped_comments {
+            eprintln!(
+                "# Skipping comment on line {} of '{}': {}",
+                comment.line,
+                filelist.display(),
+                comment.text
+            );
+        }
     }
 }
 
