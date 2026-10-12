@@ -185,7 +185,8 @@ greep needle .
 ```
 
 Directories are recursed automatically. Dotfiles and dot-directories are skipped,
-so a `.secret.txt` alongside `notes.txt` is not searched.
+so a `.secret.txt` alongside `notes.txt` is not searched. An entry the walk cannot
+read is reported as an error (exit status `2`), never skipped silently.
 
 ### Read from stdin
 
@@ -221,7 +222,7 @@ The `#TIMING_SUMMARY` fields:
 |---|---|
 | `algorithm` | The algorithm code that ran. |
 | `files` | Files **searched**, including ones that failed to open. |
-| `errors` | Files that failed. |
+| `errors` | Files, directories and directory entries that could not be read. |
 | `matched` | Files with at least one match. |
 | `matches` | Matching lines across every file. Binary files count here even though their lines are never printed. |
 | `bytes` | Bytes searched, summed over files that succeeded. |
@@ -306,7 +307,7 @@ The rules, and their edges:
 |------|---------|
 | `0` | At least one match was found. |
 | `1` | No matches were found. |
-| `2` | An error occurred (unreadable file or directory, bad argument, unknown algorithm). |
+| `2` | An error occurred (unreadable file, directory or directory entry, bad argument, unknown algorithm). |
 
 An error outranks a match: a run that both matched something and failed to open
 another file exits `2`.
@@ -363,7 +364,7 @@ These are current, verified behaviors rather than hypotheticals. Each links to i
 - **Binary detection has a bounded window and no override.** Only the first 8 KiB of a file is inspected for a NUL byte, so a file that turns binary later is treated as text. There is also no `grep -a`/`--text` equivalent to force a binary file to print its matching lines.
 - **A search string containing a newline never matches.** Search is line-scoped and no line contains a newline, so both algorithms agree on this and exit `1`.
 - **Hidden files are always skipped** ([#25](https://github.com/PeteRichardson/greep/issues/25)). Dotfiles and dot-directories are excluded from directory walks, with no opt-out flag.
-- **Symlinks inside a directory are skipped silently** ([#24](https://github.com/PeteRichardson/greep/issues/24)). This matches `grep -r`'s default. Note the asymmetry: a symlink passed *explicitly* as an argument **is** followed — only the directory walk skips them.
+- **Symlinks and special files inside a directory are skipped silently** ([#24](https://github.com/PeteRichardson/greep/issues/24)). This matches `grep -r`'s default. Special files are sockets, FIFOs and device nodes. Note the asymmetry: a symlink passed *explicitly* as an argument **is** followed — only the directory walk skips them.
 - **A `-f` manifest must be valid UTF-8** ([#39](https://github.com/PeteRichardson/greep/issues/39)). Paths given as arguments or found by the directory walk keep their exact bytes, so non-UTF-8 filenames work. A manifest is read line-by-line as text, so a non-UTF-8 path *inside* one fails the whole read with "stream did not contain valid UTF-8". This is a loud error rather than the silent mangling it replaced.
 - **No CI** ([#32](https://github.com/PeteRichardson/greep/issues/32)). The test suite is not run automatically on push.
 

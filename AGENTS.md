@@ -37,7 +37,8 @@ When a change alters observable behavior, update the README, not this file.
   validates the algorithm code and resolves the paths to search (filelist vs.
   positional vs. default stdin). Directories are not expanded here.
 - `src/filelist.rs` — `read_filelist`, `walk` (lazy depth-first directory walk,
-  skipping dotfiles/dotdirs; an unreadable directory is a `WalkItem` in sequence).
+  skipping dotfiles/dotdirs; anything it cannot read is a `WalkItem::Error`
+  in sequence).
 - `src/loader.rs` — `load()`: reads files under 1GB into memory, memory-maps
   files at or above 1GB via `memmap2`.
 - `src/search/` — `SearchAlgorithm` trait + registry (`find_algorithm`,

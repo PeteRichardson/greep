@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// Expands a leading `~` to the value of `$HOME`.
@@ -91,17 +91,71 @@ pub fn read_filelist(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// One step of a walk: a file to search, or a directory that could not be opened.
+/// One step of a walk: a file to search, or something the walk could not read.
 ///
 /// A failed `read_dir` used to print an error and vanish: it happened on the
 /// main thread before any worker existed, so it never reached the per-file error
 /// channel and the run exited 1 (no match) rather than 2 (error). Carrying it in
 /// the walk's own output puts it in sequence with the files around it, for the
-/// caller to report and count.
+/// caller to report and count. The same goes for an entry inside a directory
+/// that cannot be read: a walk that quietly drops one is an incomplete search
+/// that reports itself as complete.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WalkItem {
     File(PathBuf),
-    UnreadableDir(String),
+    Error(String),
+}
+
+/// What the walk does with one directory entry.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Descend(PathBuf),
+    Yield(WalkItem),
+    /// Skipped on purpose, not because of an error.
+    Skip,
+}
+
+/// Decides what to do with the entry at `path`, given its type.
+///
+/// Symlinks and special files are skipped, as `grep -r` does (#24). A type
+/// that cannot be read is reported, never skipped, ENOENT included (#63): an
+/// entry deleted mid-walk is the same race as a file deleted before a worker
+/// opens it, and that one is already reported.
+fn classify_type(path: PathBuf, file_type: io::Result<fs::FileType>) -> Step {
+    match file_type {
+        Ok(ft) if ft.is_dir() => Step::Descend(path),
+        Ok(ft) if ft.is_file() => Step::Yield(WalkItem::File(path)),
+        Ok(_) => Step::Skip,
+        Err(e) => Step::Yield(WalkItem::Error(format!(
+            "unable to read the type of '{}': {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// Decides what to do with one entry read from `dir`.
+///
+/// An entry that cannot be read at all is reported against `dir`, since there
+/// is no name to report it against. On macOS and Linux, std's `ReadDir` ends
+/// after such an error, so a broken directory costs one error, not an endless
+/// stream of them. std does not document this, so it holds only in practice.
+fn classify_entry(dir: &Path, entry: io::Result<fs::DirEntry>) -> Step {
+    let entry = match entry {
+        Ok(entry) => entry,
+        Err(e) => {
+            return Step::Yield(WalkItem::Error(format!(
+                "unable to read directory '{}': {e}",
+                dir.display()
+            )))
+        }
+    };
+    // Tested on the raw bytes rather than through `to_string_lossy`, so a name
+    // that is not valid UTF-8 is classified on what it actually starts with
+    // instead of on a decoded copy of itself.
+    if entry.file_name().as_encoded_bytes().starts_with(b".") {
+        return Step::Skip;
+    }
+    classify_type(entry.path(), entry.file_type())
 }
 
 /// Expands directory arguments into the files they contain, lazily.
@@ -123,8 +177,8 @@ pub struct Walk {
     args: std::vec::IntoIter<PathBuf>,
     /// The directories being read, innermost last. Finishing the innermost one
     /// before resuming its parent gives the same depth-first, `read_dir` order a
-    /// recursive walk does.
-    open_dirs: Vec<fs::ReadDir>,
+    /// recursive walk does. Each keeps its path, to name it in an error.
+    open_dirs: Vec<(PathBuf, fs::ReadDir)>,
 }
 
 impl Walk {
@@ -132,14 +186,14 @@ impl Walk {
     fn enter(&mut self, dir: &Path) -> Option<WalkItem> {
         match fs::read_dir(dir) {
             Ok(entries) => {
-                self.open_dirs.push(entries);
+                self.open_dirs.push((dir.to_path_buf(), entries));
                 None
             }
             // One item per failed directory, so a run's error count and exit
             // status see it. The search proceeds with what *could* be opened.
             // The OS reason is kept: "permission denied" and "too many open
             // files" need different fixes, and the message is all the user gets.
-            Err(e) => Some(WalkItem::UnreadableDir(format!(
+            Err(e) => Some(WalkItem::Error(format!(
                 "unable to open directory '{}': {e}",
                 dir.display()
             ))),
@@ -152,27 +206,19 @@ impl Iterator for Walk {
 
     fn next(&mut self) -> Option<WalkItem> {
         loop {
-            if let Some(entries) = self.open_dirs.last_mut() {
+            if let Some((dir, entries)) = self.open_dirs.last_mut() {
                 let Some(entry) = entries.next() else {
                     self.open_dirs.pop();
                     continue;
                 };
-                let Ok(entry) = entry else { continue };
-                // Tested on the raw bytes rather than through `to_string_lossy`,
-                // so a name that is not valid UTF-8 is classified on what it
-                // actually starts with instead of on a decoded copy of itself.
-                if entry.file_name().as_encoded_bytes().starts_with(b".") {
-                    continue;
-                }
-                let child = entry.path();
-                match entry.file_type() {
-                    Ok(ft) if ft.is_dir() => {
+                match classify_entry(dir, entry) {
+                    Step::Descend(child) => {
                         if let Some(err) = self.enter(&child) {
                             return Some(err);
                         }
                     }
-                    Ok(ft) if ft.is_file() => return Some(WalkItem::File(child)),
-                    _ => {}
+                    Step::Yield(item) => return Some(item),
+                    Step::Skip => {}
                 }
                 continue;
             }
@@ -362,7 +408,7 @@ mod tests {
         for item in walk(paths) {
             match item {
                 WalkItem::File(f) => files.push(f),
-                WalkItem::UnreadableDir(e) => errors.push(e),
+                WalkItem::Error(e) => errors.push(e),
             }
         }
         (files, errors)
@@ -482,6 +528,56 @@ mod tests {
         expected.sort();
 
         assert_eq!(result, expected);
+    }
+
+    /// Symlinks and special files are skipped on purpose (#24), as `grep -r`
+    /// does. Only an *error* reading an entry is reported; these are not errors.
+    #[cfg(unix)]
+    #[test]
+    fn walk_skips_symlinks_and_special_files_without_an_error() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::net::UnixListener;
+
+        let tmp = fixture();
+        let dir = tmp.path();
+        fs::write(dir.join("real.txt"), b"r").unwrap();
+        fs::create_dir(dir.join("realdir")).unwrap();
+        symlink(dir.join("real.txt"), dir.join("link-to-file")).unwrap();
+        symlink(dir.join("realdir"), dir.join("link-to-dir")).unwrap();
+        symlink(dir.join("nowhere"), dir.join("dangling")).unwrap();
+        let _socket = UnixListener::bind(dir.join("sock")).unwrap();
+
+        let (files, errors) = expand_paths(vec![dir.to_path_buf()]);
+        assert_eq!(files, vec![dir.join("real.txt")]);
+        assert!(errors.is_empty(), "skips are not errors: {errors:?}");
+    }
+
+    /// No real filesystem greep runs on makes `file_type()` fail on demand, so
+    /// the error is handed in directly. ENOENT gets no special case (#63): a
+    /// file deleted mid-walk is reported, as it is when a worker fails to open
+    /// one.
+    #[test]
+    fn an_entry_whose_type_cannot_be_read_is_reported_not_skipped() {
+        let path = PathBuf::from("dir/gone.txt");
+        let gone = io::Error::new(io::ErrorKind::NotFound, "deleted mid-walk");
+        let step = classify_type(path, Err(gone));
+        let Step::Yield(WalkItem::Error(msg)) = step else {
+            panic!("expected a reported error, got {step:?}");
+        };
+        assert!(msg.contains("'dir/gone.txt'"), "no path in {msg:?}");
+        assert!(msg.contains("deleted mid-walk"), "no OS reason in {msg:?}");
+    }
+
+    /// A `ReadDir` fails mid-directory only on a failing disk or mount, which
+    /// no test can arrange, so the error is handed in directly.
+    #[test]
+    fn an_entry_that_cannot_be_read_is_reported_not_skipped() {
+        let step = classify_entry(Path::new("some/dir"), Err(io::Error::other("disk on fire")));
+        let Step::Yield(WalkItem::Error(msg)) = step else {
+            panic!("expected a reported error, got {step:?}");
+        };
+        assert!(msg.contains("'some/dir'"), "no directory in {msg:?}");
+        assert!(msg.contains("disk on fire"), "no OS reason in {msg:?}");
     }
 
     #[cfg(unix)]

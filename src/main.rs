@@ -45,7 +45,7 @@ struct PerFileResult {
 /// What one walk item came to by the time it reaches the output.
 enum Outcome {
     File(PerFileResult),
-    UnreadableDir(String),
+    WalkError(String),
 }
 
 /// Running totals over every file, accumulated as each one's matches are printed
@@ -137,13 +137,13 @@ fn run() -> i32 {
             WalkItem::File(filename) => {
                 Outcome::File(search_file(filename, &search_word, &algorithm_code, timing))
             }
-            WalkItem::UnreadableDir(err) => Outcome::UnreadableDir(err),
+            WalkItem::Error(err) => Outcome::WalkError(err),
         },
         |outcome| {
             let result = match outcome {
                 Outcome::File(result) => result,
-                Outcome::UnreadableDir(err) => {
-                    // A directory the walk could not open is an error just like
+                Outcome::WalkError(err) => {
+                    // Anything the walk could not read is an error just like
                     // a file a worker could not read: reported, counted, and
                     // exit status 2. It is not a file searched.
                     let _ = out.flush();
