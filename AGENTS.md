@@ -48,3 +48,17 @@ When a change alters observable behavior, update the README, not this file.
 The thread count is `available_parallelism()`, whatever the file count. The
 walk runs on the main thread, interleaved with emitting results, so it overlaps
 the search instead of preceding it.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for PeteRichardson/greep, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage labels, each the same as its role name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `GLOSSARY.md` and `docs/adr/`, made only when they become necessary. See `docs/agents/domain.md`.
