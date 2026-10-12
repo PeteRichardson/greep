@@ -562,23 +562,26 @@ fn missing_search_word_reports_clap_usage_not_a_hand_rolled_one() {
         .stderr(predicates::str::contains("usage: greep [-v]").not());
 }
 
+/// The exact `--version` line that README.md shows. The version comes from
+/// Cargo.toml, so a version bump needs no test change, but the `greep ` prefix
+/// and the single line are pinned.
+fn version_line() -> String {
+    format!("greep {}\n", env!("CARGO_PKG_VERSION"))
+}
+
 #[test]
 fn version_flag_prints_the_package_version() {
     greep()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
+        .stdout(version_line());
 }
 
 #[test]
 fn short_version_flag_does_not_collide_with_verbose() {
     // -v is verbose; clap's generated short for --version is -V. Both must work.
-    greep()
-        .arg("-V")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
+    greep().arg("-V").assert().success().stdout(version_line());
 }
 
 // ---------------------------------------------------------------------------
