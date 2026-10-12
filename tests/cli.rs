@@ -297,6 +297,25 @@ fn unreadable_directory_is_the_only_argument_still_exits_2() {
         .stderr(predicates::str::contains("unable to open directory"));
 }
 
+/// The message carries the OS reason after the directory name, so a locked
+/// directory is not confused with, say, running out of file descriptors.
+#[cfg(unix)]
+#[test]
+fn unreadable_directory_error_says_why() {
+    let dir = fixture();
+    let bad = dir.path().join("locked");
+    fs::create_dir(&bad).unwrap();
+    let Some(locked) = lock_directory(&bad) else {
+        return;
+    };
+
+    greep()
+        .args(["needle", locked.path()])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("locked': Permission denied"));
+}
+
 #[cfg(unix)]
 #[test]
 fn unreadable_directory_counts_in_the_timing_error_total() {

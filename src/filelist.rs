@@ -137,8 +137,10 @@ impl Walk {
             }
             // One item per failed directory, so a run's error count and exit
             // status see it. The search proceeds with what *could* be opened.
-            Err(_) => Some(WalkItem::UnreadableDir(format!(
-                "unable to open directory '{}'",
+            // The OS reason is kept: "permission denied" and "too many open
+            // files" need different fixes, and the message is all the user gets.
+            Err(e) => Some(WalkItem::UnreadableDir(format!(
+                "unable to open directory '{}': {e}",
                 dir.display()
             ))),
         }
@@ -452,6 +454,13 @@ mod tests {
         assert!(result.is_empty(), "a locked directory yields no files");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("unable to open directory"));
+        // The OS reason, so a locked directory can be told apart from, say,
+        // running out of file descriptors on a deep tree.
+        assert!(
+            errors[0].contains("Permission denied"),
+            "no OS reason in {:?}",
+            errors[0]
+        );
     }
 
     #[test]
