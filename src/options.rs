@@ -69,9 +69,9 @@ pub struct ResolvedArgs {
     /// runs alongside the search, so that it is not a serial prelude to it.
     pub paths: Vec<PathBuf>,
     /// The manifest given with `-f`, if any, and the comment lines it skipped,
-    /// for `-v` to report.
-    pub filelist: Option<PathBuf>,
-    pub skipped_comments: Vec<Comment>,
+    /// for `-v` to report. One field, so comments cannot exist without a
+    /// manifest to name.
+    pub filelist: Option<(PathBuf, Vec<Comment>)>,
 }
 
 pub fn print_algorithm_list() {
@@ -81,8 +81,8 @@ pub fn print_algorithm_list() {
 }
 
 pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
-    // Guard at the argument boundary, so neither algorithm needs an empty-word
-    // path. `grep ""` matches every line; silently matching nothing was worse
+    // Guard at the argument boundary, so no empty word reaches an algorithm;
+    // their own empty-word guards stay only as a defense. `grep ""` matches every line; silently matching nothing was worse
     // than either answer.
     // clap enforces `required_unless_present = "list"`, and `--list` returns in
     // main before this runs, so `None` is unreachable in practice. Folding it
@@ -100,15 +100,13 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
         return Err(AppError::ConflictingFileArgs);
     }
 
-    let mut skipped_comments = Vec::new();
-    let paths = if let Some(path) = &args.filelist {
-        let list = read_filelist(path).map_err(|e| AppError::FilelistOpen(path.clone(), e))?;
-        skipped_comments = list.comments;
-        list.paths
+    let (paths, filelist) = if let Some(path) = args.filelist {
+        let list = read_filelist(&path).map_err(|e| AppError::FilelistOpen(path.clone(), e))?;
+        (list.paths, Some((path, list.comments)))
     } else if !args.files.is_empty() {
-        args.files
+        (args.files, None)
     } else {
-        vec![PathBuf::from("/dev/stdin")]
+        (vec![PathBuf::from("/dev/stdin")], None)
     };
 
     Ok(ResolvedArgs {
@@ -118,8 +116,7 @@ pub fn resolve(args: Args) -> Result<ResolvedArgs, AppError> {
         algorithm,
         search_word,
         paths,
-        filelist: args.filelist,
-        skipped_comments,
+        filelist,
     })
 }
 

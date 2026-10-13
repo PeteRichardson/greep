@@ -4,6 +4,7 @@ mod options;
 mod pool;
 mod search;
 
+use std::fmt::Display;
 use std::io::{BufWriter, Write};
 use std::num::NonZeroUsize;
 use std::panic::{self, AssertUnwindSafe};
@@ -40,6 +41,20 @@ struct PerFileResult {
     binary: bool,
     timing: Option<TimingInfo>,
     error: Option<String>,
+}
+
+impl PerFileResult {
+    /// A file that produced no search at all: it could not be loaded, or the
+    /// search panicked.
+    fn failed(filename: PathBuf, error: String) -> Self {
+        Self {
+            filename,
+            matches: Vec::new(),
+            binary: false,
+            timing: None,
+            error: Some(error),
+        }
+    }
 }
 
 /// What one walk item came to by the time it reaches the output.
@@ -115,7 +130,6 @@ fn run() -> i32 {
     let mut out = BufWriter::new(stdout.lock());
 
     let mut totals = RunTotals::default();
-    let mut any_error = false;
 
     let mut file_index = 0;
     let jobs = filelist::walk(paths).inspect(|item| {
@@ -148,10 +162,7 @@ fn run() -> i32 {
                     // Anything the walk could not read is an error just like
                     // a file a worker could not read: reported, counted, and
                     // exit status 2. It is not a file searched.
-                    let _ = out.flush();
-                    eprintln!("error: {err}");
-                    any_error = true;
-                    totals.errors += 1;
+                    report_error(&mut out, &mut totals, err);
                     return;
                 }
             };
@@ -178,12 +189,7 @@ fn run() -> i32 {
             }
 
             if let Some(err) = &result.error {
-                // Keep stdout and stderr readable relative to each other; this
-                // is once per failing file, not once per match.
-                let _ = out.flush();
-                eprintln!("error: {name}: {err}");
-                any_error = true;
-                totals.errors += 1;
+                report_error(&mut out, &mut totals, format_args!("{name}: {err}"));
             }
 
             if let Some(info) = result.timing {
@@ -204,7 +210,7 @@ fn run() -> i32 {
         print_timing_summary(&algorithm_code, &totals, started.elapsed());
     }
 
-    if any_error {
+    if totals.errors > 0 {
         EXIT_ERROR
     } else if totals.files_matched > 0 {
         EXIT_MATCH
@@ -213,15 +219,26 @@ fn run() -> i32 {
     }
 }
 
+/// Reports one error and counts it. The count is the only error state, so the
+/// exit status and the -t summary's `errors=` cannot disagree.
+fn report_error(out: &mut impl Write, totals: &mut RunTotals, msg: impl Display) {
+    // Keep stdout and stderr readable relative to each other; this is once per
+    // error, not once per match.
+    let _ = out.flush();
+    eprintln!("error: {msg}");
+    totals.errors += 1;
+}
+
 /// Recover the message from a panicking search.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        format!("worker thread panicked: {s}")
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        format!("worker thread panicked: {s}")
-    } else {
-        "worker thread panicked".to_string()
-    }
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .map_or_else(
+            || "worker thread panicked".to_string(),
+            |s| format!("worker thread panicked: {s}"),
+        )
 }
 
 /// The `-v` lines that come before any file: what is searched for, and each
@@ -229,8 +246,8 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// otherwise visible only as a missing result.
 fn print_verbose_preamble(resolved: &ResolvedArgs) {
     eprintln!("# Searching for '{}'", resolved.search_word);
-    if let Some(filelist) = &resolved.filelist {
-        for comment in &resolved.skipped_comments {
+    if let Some((filelist, skipped_comments)) = &resolved.filelist {
+        for comment in skipped_comments {
             eprintln!(
                 "# Skipping comment on line {} of '{}': {}",
                 comment.line,
@@ -252,13 +269,7 @@ fn search_file(
     panic::catch_unwind(AssertUnwindSafe(|| {
         run_file(&filename, search_word, algorithm, timing)
     }))
-    .unwrap_or_else(|payload| PerFileResult {
-        filename,
-        matches: Vec::new(),
-        binary: false,
-        timing: None,
-        error: Some(panic_message(&*payload)),
-    })
+    .unwrap_or_else(|payload| PerFileResult::failed(filename, panic_message(&*payload)))
 }
 
 fn run_file(
@@ -269,15 +280,7 @@ fn run_file(
 ) -> PerFileResult {
     let loaded = match loader::load(filename) {
         Ok(l) => l,
-        Err(e) => {
-            return PerFileResult {
-                filename: filename.to_path_buf(),
-                matches: Vec::new(),
-                binary: false,
-                timing: None,
-                error: Some(e.to_string()),
-            };
-        }
+        Err(e) => return PerFileResult::failed(filename.to_path_buf(), e.to_string()),
     };
 
     let binary = loader::looks_binary(loaded.as_bytes());
@@ -285,15 +288,12 @@ fn run_file(
     // `elapsed` brackets the search only, not the load above, so it measures the
     // algorithm rather than the I/O. That is what makes bf and bmh comparable,
     // and what makes the summary's two throughput figures differ.
-    let (matches, timing) = if timing {
-        let bytes = loaded.as_bytes().len() as u64;
-        let start = Instant::now();
-        let matches = algorithm.search(search_word, loaded.as_bytes());
-        let elapsed = start.elapsed();
-        (matches, Some(TimingInfo { bytes, elapsed }))
-    } else {
-        (algorithm.search(search_word, loaded.as_bytes()), None)
-    };
+    let start = timing.then(Instant::now);
+    let matches = algorithm.search(search_word, loaded.as_bytes());
+    let timing = start.map(|start| TimingInfo {
+        bytes: loaded.as_bytes().len() as u64,
+        elapsed: start.elapsed(),
+    });
 
     PerFileResult {
         filename: filename.to_path_buf(),
@@ -341,24 +341,15 @@ fn print_timing_summary(algorithm_code: &str, totals: &RunTotals, wall: Duration
     let lines = totals.matches;
     let wall_micros = wall.as_micros();
 
-    if totals.timings.is_empty() {
-        eprintln!(
-            "#TIMING_SUMMARY algorithm={algorithm_code} files={files} errors={errors} \
-             matched={matched} matches={lines} bytes=0 min=0 avg=0 max=0 \
-             algo_mbps=0.0 wall_mbps=0.0 wall_us={wall_micros}"
-        );
-        return;
-    }
-
-    let micros: Vec<u128> = totals
-        .timings
-        .iter()
-        .map(|t| t.elapsed.as_micros())
-        .collect();
-    let min = micros.iter().min().unwrap();
-    let max = micros.iter().max().unwrap();
-    let search_micros: u128 = micros.iter().sum();
-    let avg = search_micros / micros.len() as u128;
+    // With no file searched, every per-file figure falls back to 0, and so do
+    // both rates (`megabytes_per_second` gives 0 for no elapsed time).
+    let micros = || totals.timings.iter().map(|t| t.elapsed.as_micros());
+    let min = micros().min().unwrap_or(0);
+    let max = micros().max().unwrap_or(0);
+    let search_micros: u128 = micros().sum();
+    let avg = search_micros
+        .checked_div(totals.timings.len() as u128)
+        .unwrap_or(0);
     let total_bytes: u64 = totals.timings.iter().map(|t| t.bytes).sum();
 
     // Two rates, because "throughput" is ambiguous while N threads are in flight

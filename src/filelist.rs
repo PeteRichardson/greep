@@ -291,7 +291,6 @@ impl Iterator for Walk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     /// A temp directory that removes itself when dropped, including while the
     /// thread is unwinding from a failed assertion. The explicit `remove_*` calls
@@ -312,15 +311,7 @@ mod tests {
 
     #[test]
     fn read_filelist_skips_blank_lines_and_trims() {
-        let dir = fixture();
-        let path = dir.path().join("list.txt");
-        {
-            let mut f = fs::File::create(&path).unwrap();
-            writeln!(f, "first.txt").unwrap();
-            writeln!(f).unwrap();
-            writeln!(f, "second.txt\r").unwrap();
-        }
-        let result = read_filelist(&path).unwrap().paths;
+        let result = read_manifest("list.txt", "first.txt\n\nsecond.txt\r\n");
         assert_eq!(
             result,
             vec![PathBuf::from("first.txt"), PathBuf::from("second.txt")]

@@ -41,7 +41,7 @@ pub fn load(path: &Path) -> std::io::Result<Loaded> {
 /// branch went unexercised entirely. With the cutoff injectable, a handful of
 /// bytes is enough.
 fn load_with_threshold(path: &Path, threshold: u64) -> std::io::Result<Loaded> {
-    let file = File::open(path)?;
+    let mut file = File::open(path)?;
     let metadata = file.metadata()?;
 
     if metadata.is_file() && metadata.len() >= threshold {
@@ -55,7 +55,6 @@ fn load_with_threshold(path: &Path, threshold: u64) -> std::io::Result<Loaded> {
     // mmap branch above, so a legitimate hint can never exceed it.
     let hint = usize::try_from(metadata.len().min(threshold)).unwrap_or(0);
     let mut buf = Vec::with_capacity(hint);
-    let mut file = file;
     file.read_to_end(&mut buf)?;
     Ok(Loaded::Owned(buf))
 }
@@ -63,15 +62,13 @@ fn load_with_threshold(path: &Path, threshold: u64) -> std::io::Result<Loaded> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     /// Writes `contents` to a file inside a self-cleaning temp dir and returns
     /// both. The `TempDir` must stay bound for the lifetime of the path.
     fn file_containing(contents: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("input");
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(contents).unwrap();
+        std::fs::write(&path, contents).unwrap();
         (dir, path)
     }
 
